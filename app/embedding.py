@@ -2,6 +2,7 @@ import io
 import re
 import base64
 from pathlib import Path
+from sys import prefix
 import ollama
 from pix2tex.cli import LatexOCR
 from docling.document_converter import DocumentConverter, PdfFormatOption
@@ -143,6 +144,74 @@ def get_academic_title(doc):
     return "Unknown_Title"
 
 
+def match_by_proximity(items, captions, max_distance=150):
+    """Match items to captions by closest vertical midpoint proximity."""
+    caption_map = {}
+    remaining = list(captions)
+    
+    for item, _ in items:
+        item_mid = (item.prov[0].bbox.t + item.prov[0].bbox.b) / 2
+        
+        best_caption = None
+        best_distance = max_distance
+        
+        for caption in remaining:
+            cap_mid = (caption.prov[0].bbox.t + caption.prov[0].bbox.b) / 2
+            distance = abs(item_mid - cap_mid)
+            if distance < best_distance:
+                best_distance = distance
+                best_caption = caption
+        
+        if best_caption:
+            caption_map[id(item)] = best_caption.text.strip()
+            remaining.remove(best_caption)
+    
+    return caption_map
+
+
+def build_caption_map(items_list):
+    caption_map = {}
+    
+    for page_no in set(item.prov[0].page_no for item, _ in items_list if item.prov):
+        
+        page_tables = sorted(
+            [(item, idx) for idx, (item, _) in enumerate(items_list)
+             if item.prov and item.prov[0].page_no == page_no 
+             and item.label == DocItemLabel.TABLE],
+            key=lambda x: x[0].prov[0].bbox.t,
+            reverse=True
+        )
+        page_figures = sorted(
+            [(item, idx) for idx, (item, _) in enumerate(items_list)
+             if item.prov and item.prov[0].page_no == page_no 
+             and item.label == DocItemLabel.PICTURE],
+            key=lambda x: x[0].prov[0].bbox.t,
+            reverse=True
+        )
+        page_captions = sorted(
+            [item for item, _ in items_list
+             if item.prov and item.prov[0].page_no == page_no
+             and item.label == DocItemLabel.CAPTION],
+            key=lambda x: x.prov[0].bbox.t,
+            reverse=True
+        )
+
+        table_captions = [
+            c for c in page_captions 
+            if re.search(r'Table\s+\d+', c.text, re.IGNORECASE)
+        ]
+        figure_captions = [
+            c for c in page_captions 
+            if re.search(r'Fig(?:ure)?\.?\s*\d+', c.text, re.IGNORECASE)
+        ]
+
+        # Match main tables and figures
+        caption_map.update(match_by_proximity(page_tables, table_captions))
+        caption_map.update(match_by_proximity(page_figures, figure_captions))
+
+    return caption_map
+
+
 def process_research_paper(pdf_path):
     result = converter.convert(pdf_path)
     doc = result.document
@@ -151,23 +220,14 @@ def process_research_paper(pdf_path):
     academic_title = get_academic_title(doc)
 
     # ── 1. Pre-collect captions ───────────────────────────────────────────
-    caption_map = {}
     items_list = list(doc.iterate_items())
+    caption_map = build_caption_map(items_list)
 
     # Build flat index of all paragraphs for formula context lookup
     all_para_texts = []
     for idx, (item, level) in enumerate(items_list):
         if item.label in TEXT_LABELS and item.text.strip():
             all_para_texts.append((idx, item.text))
-
-
-    for idx, (item, level) in enumerate(items_list):
-        if item.label == DocItemLabel.CAPTION:
-            for back in range(idx - 1, max(idx - 5, -1), -1):
-                prev_item, _ = items_list[back]
-                if prev_item.label in (DocItemLabel.TABLE, DocItemLabel.PICTURE):
-                    caption_map[id(prev_item)] = item.text.strip()
-                    break
 
     # ── 2. Group items into subsection buckets ────────────────────────────
     sections = []
@@ -300,23 +360,15 @@ def process_research_paper(pdf_path):
 
         # ── 4. Chunk section text ─────────────────────────────────────────
         if section_text_pool:
+            
             full_section_text = "\n".join(section_text_pool)
             chunks = chunk_text_by_chars(full_section_text, limit=1200, overlap=200)
-
-            def normalize(refs):
-                result = []
-                for r in refs:
-                    num = re.search(r'\d+', r).group()
-                    prefix = re.match(r'[A-Za-z]+', r).group().lower()
-                    prefix = 'figure' if 'fig' in prefix else prefix
-                    result.append(f"{prefix}_{num}")
-                return list(set(result))
 
             has_formulas = any(item.label == DocItemLabel.FORMULA for item in section["items"])
 
             for chunk in chunks:
-                table_refs = re.findall(r"Table\s+\d+", chunk, re.IGNORECASE)
-                fig_refs   = re.findall(r"(?:Figure|Fig\.)\s*\d+", chunk, re.IGNORECASE)
+                table_refs = re.findall(r"(?:Supplementary\s+|Suppl\.\s+)?Table\s+\d+", chunk, re.IGNORECASE)
+                fig_refs   = re.findall(r"(?:Supplementary\s+|Suppl\.\s+)?(?:Figure|Fig\.)\s*\d+", chunk, re.IGNORECASE)
                 eq_refs    = re.findall(r"Equation\s+\d+", chunk, re.IGNORECASE)
 
                 final_nodes.append(TextNode(
@@ -329,11 +381,36 @@ def process_research_paper(pdf_path):
                         "referenced_figures": normalize(fig_refs),
                         "referenced_equations": normalize(eq_refs) or section_equation_ids,  # still not perfect, coz sometimes the equations are a section of their own, so it might not refer
                         "has_formulas": has_formulas,
-                        **get_provenance(section["items"][0], pdf_path),  # Assuming the section has at least one item
+                        **(get_provenance(section["items"][0], pdf_path) if section["items"] else {}), # Assuming the section has at least one item
                     }
                 ))
 
     return final_nodes
+
+
+def normalize(refs):
+    result = []
+    for r in refs:
+        num_match = re.search(r'\d+', r)
+        if not num_match:
+            continue
+        num = num_match.group()
+        is_supp = bool(re.search(r'Supplementary|Suppl\.', r, re.IGNORECASE))
+        type_match = re.search(r'(?:Figure|Fig|Table|Equation|Eq)', r, re.IGNORECASE)
+        if not type_match:
+            continue
+        prefix = type_match.group().lower()
+        if 'fig' in prefix:
+            prefix = 'figure'
+        elif 'eq' in prefix:
+            prefix = 'equation'
+        else:
+            prefix = 'table'
+        if is_supp:
+            result.append(f"supp_{prefix}_{num}")
+        else:
+            result.append(f"{prefix}_{num}")
+    return list(set(result))
 
 
 def describe_formula(image_pil):
