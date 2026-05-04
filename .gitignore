@@ -1,0 +1,19 @@
+# Data and models
+qdrant_db/
+documents/
+figures/
+nodes_backup.json
+registry.json
+*.pdf
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+
+# Model weights
+*.pth
+*.bin
+*.safetensors
+pix2tex/

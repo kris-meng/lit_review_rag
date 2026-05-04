@@ -1,0 +1,13 @@
+docling
+docling-core
+llama-index
+llama-index-vector-stores-qdrant
+llama-index-embeddings-ollama
+llama-index-readers-docling
+qdrant-client
+ollama
+pillow
+python-dotenv
+pix2tex
+pytesseract
+pymupdf

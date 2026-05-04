@@ -1,0 +1,22 @@
+{
+    "name": "Research RAG Dev",
+    "build": {
+        "dockerfile": "../Dockerfile",
+        "context": ".."
+    },
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "ms-python.python",
+                "ms-azuretools.vscode-docker"
+            ]
+        }
+    },
+    "runArgs": [
+        "--add-host=host.docker.internal:host-gateway"
+    ],
+    // This maps your Mac folder to /app in the container
+    "workspaceFolder": "/app",
+    "workspaceMount": "source=${localWorkspaceFolder},target=/app,type=bind",
+    "remoteUser": "root"
+}
