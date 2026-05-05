@@ -4,23 +4,20 @@ from pathlib import Path
 from llama_index.core import StorageContext, VectorStoreIndex
 from qdrant_client import QdrantClient
 from qdrant_client.models import Filter, FieldCondition, MatchValue
-from embedding import process_research_paper
+from chunk import process_research_paper
 from llama_index.embeddings.ollama import OllamaEmbedding
 from llama_index.core.schema import TextNode
 from llama_index.vector_stores.qdrant import QdrantVectorStore
 from tqdm import tqdm
+from db import client, vector_store, storage_context, COLLECTION
 
 
-COLLECTION = "research_papers"
 PDF_DIR = Path("/app/documents") 
-QDRANT_PATH = "/app/qdrant_db"
+
 REGISTRY_PATH = "/app/qdrant_db/registry.json"
 BACKUP_PATH = "/app/qdrant_db/nodes_backup.json"
 OLLAMA_BASE_URL = "http://host.docker.internal:11434"
 
-client = QdrantClient(path=QDRANT_PATH)
-vector_store = QdrantVectorStore(collection_name=COLLECTION, client=client)
-storage_context = StorageContext.from_defaults(vector_store=vector_store)
 
 # Initialize Nomic Embeddings via Ollama
 embed_model = OllamaEmbedding(
@@ -77,7 +74,7 @@ def delete_pdf(pdf_name):
     registry = load_registry()
     
     if pdf_name not in registry:
-        print(f"❌ {pdf_name} not found in registry")
+        print(f"{pdf_name} not found in registry")
         return
     
     paper_title = registry[pdf_name]["paper_title"]
@@ -105,7 +102,28 @@ def delete_pdf(pdf_name):
     # Remove from registry
     del registry[pdf_name]
     save_registry(registry)
-    print(f"✅ Removed {pdf_name} from registry")
+    print(f"Removed {pdf_name} from registry")
+
+def process_and_ingest(pdf_path: Path):
+    doc_nodes = process_research_paper(pdf_path)
+    paper_title = doc_nodes[0].metadata.get("paper_title", "Unknown") if doc_nodes else "Unknown"
+
+    if Path(BACKUP_PATH).exists():
+        existing = load_nodes(BACKUP_PATH)
+        all_nodes = existing + doc_nodes
+    else:
+        all_nodes = doc_nodes
+
+    save_nodes(all_nodes, BACKUP_PATH)
+
+    VectorStoreIndex(
+        doc_nodes,
+        storage_context=storage_context,
+        embed_model=embed_model,
+        show_progress=False,
+    )
+    register_pdf(pdf_path.name, paper_title, len(doc_nodes))
+    return paper_title, len(doc_nodes)
 
 if __name__ == "__main__":
 

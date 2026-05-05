@@ -1,4 +1,3 @@
-import base64
 import json
 from pathlib import Path
 from llama_index.core import VectorStoreIndex, StorageContext
@@ -9,11 +8,10 @@ from qdrant_client.models import Filter, FieldCondition, MatchValue
 import ollama
 import re
 from difflib import get_close_matches
-import io
+from qdrant_client.models import Filter, FieldCondition, MatchValue
+from db import client, vector_store, storage_context, COLLECTION
 
 # --- CONFIG ---
-QDRANT_PATH = "/app/qdrant_db"
-COLLECTION = "research_papers"
 OLLAMA_BASE_URL = "http://host.docker.internal:11434"
 
 # --- INIT ---
@@ -22,39 +20,15 @@ embed_model = OllamaEmbedding(
     base_url=OLLAMA_BASE_URL
 )
 
-client = QdrantClient(path=QDRANT_PATH)
-vector_store = QdrantVectorStore(collection_name=COLLECTION, client=client)
-storage_context = StorageContext.from_defaults(vector_store=vector_store)
-
 index = VectorStoreIndex.from_vector_store(
     vector_store,
     embed_model=embed_model,
 )
 
-SYSTEM_PROMPT = """You are a research assistant helping with academic literature review.
-You are given retrieved excerpts from research papers.
 
-Rules:
-- Always cite which paper and section your answer comes from
-- If multiple papers say different things, highlight the contradiction
-- If the retrieved context doesn't answer the question, say so explicitly
-- For formulas, refer to them by their equation number
-- Never make up information not present in the retrieved context"""
-
-GLOBAL_TRIGGERS = [
-    "other papers", "any papers", "compare", "across papers",
-    "similar to", "different from", "address", "limitation",
-    "weakness", "gap", "related work", "literature"
-]
-
-def detect_scope(query, paper_title=None):
-    """Determine if query needs local or global search."""
-    if paper_title is None:
-        return "global"
-    query_lower = query.lower()
-    if any(trigger in query_lower for trigger in GLOBAL_TRIGGERS):
-        return "global"
-    return "local"
+JUNK_SECTIONS = {'references', 'citation', 'edited by', 'ethics statement', 
+                 'acknowledgements', 'acknowledgments', 'funding', 'author contributions',
+                 'conflict of interest', 'publisher\'s note'}
 
 def resolve_paper_title(paper_title):
     """Find the closest matching stored paper title."""
@@ -79,38 +53,20 @@ def resolve_paper_title(paper_title):
 
 def retrieve(query, top_k=5, paper_title=None, paper_titles=None, score_threshold=0.5):
     # Always expand query into multiple sub-queries
-    expanded = expand_query(query)
     
-    all_nodes = []
-    for q in expanded:
-        nodes = _do_retrieve(q, top_k=top_k, paper_title=paper_title, paper_titles=paper_titles)
-        all_nodes.extend(nodes)
+    nodes = _do_retrieve(query=query, top_k=top_k, paper_title=paper_title, paper_titles=paper_titles)
     
     # Deduplicate and filter
     seen = set()
     unique = []
-    for n in all_nodes:
+    for n in nodes:
         if n.node_id not in seen:
             seen.add(n.node_id)
             unique.append(n)
-    
+    unique = [n for n in unique 
+              if n.metadata.get("section", "").lower() not in JUNK_SECTIONS]
     filtered = [n for n in unique if n.score >= score_threshold]
-    return filtered if filtered else unique[:1]
-
-
-def expand_query(query):
-    """Always expand query into 3 variants for better retrieval coverage."""
-    ollama_client = ollama.Client(host=OLLAMA_BASE_URL)
-    res = ollama_client.chat(model='qwen2.5:7b', messages=[{
-        'role': 'user',
-        'content': f"""Generate 3 different search queries to retrieve relevant academic paper chunks for this question:
-{query}
-
-Output only the queries, one per line, no numbering, no explanation."""
-    }])
-    queries = [q.strip() for q in res['message']['content'].strip().split('\n') if q.strip()]
-    print(f"   Expanded queries: {queries}")
-    return [query] + queries[:2]  # original + 2 expansions
+    return filtered if filtered else unique[:1], unique
 
 
 def _do_retrieve(query, top_k=5, paper_title=None, paper_titles=None):
@@ -168,11 +124,15 @@ def enrich_with_references(nodes):
 
         all_refs = (
             node.metadata.get("referenced_figures", []) +
-            node.metadata.get("referenced_tables", [])
+            node.metadata.get("referenced_tables", []) +
+            node.metadata.get("referenced_equations", [])
         )
 
         for ref_id in all_refs:
-            ref_type = ref_id.split("_")[0]  # "figure" or "table"
+            if ref_id.split("_")[0] == "supp":  
+                ref_type = ref_id.split("_")[0] + "_" + ref_id.split("_")[1]  # e.g. "supp_figure"
+            else:
+                ref_type = ref_id.split("_")[0]
             try:
                 linked = client.scroll(
                     collection_name=COLLECTION,
@@ -198,100 +158,6 @@ def enrich_with_references(nodes):
 
         enriched.append(result)
     return enriched
-
-
-def build_context(enriched_nodes):
-    """Pack retrieved chunks into a prompt context string."""
-    parts = []
-    for node in enriched_nodes:
-        meta = node["metadata"]
-        header = (
-            f"[{meta.get('type', '?').upper()} | "
-            f"{meta.get('paper_title', '?')} | "
-            f"Section: {meta.get('section', '?')} | "
-            f"Page: {meta.get('page', '?')}]"
-        )
-        parts.append(f"{header}\n{node['text']}")
-
-        # Append any linked figures/tables
-        for linked in node["linked"]:
-            linked_header = (
-                f"  [LINKED {linked.get('type', '?').upper()} | "
-                f"{linked.get('figure_id') or linked.get('table_id', '?')}]"
-            )
-            parts.append(f"{linked_header}\n  {linked.get('text', '')[:300]}...")
-
-    return "\n\n---\n\n".join(parts)
-
-
-def generate_answer(query, context, history=[]):
-    """Call LLM with retrieved context."""
-    ollama_client = ollama.Client(host=OLLAMA_BASE_URL)
-
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-    messages += history
-    messages.append({
-        "role": "user",
-        "content": f"Context from papers:\n{context}\n\nQuestion: {query}"
-    })
-
-    res = ollama_client.chat(model='qwen2.5:7b', messages=messages)
-    return res['message']['content']
-
-
-def check_relevancy(query, context, answer):
-    """Check if answer is grounded in context."""
-    ollama_client = ollama.Client(host=OLLAMA_BASE_URL)
-    res = ollama_client.chat(model='qwen2.5:7b', messages=[{
-        'role': 'user',
-        'content': f"""Given this question:
-{query}
-
-And this context:
-{context[:2000]}
-
-And this answer:
-{answer}
-
-Rate on two dimensions:
-1. GROUNDEDNESS (0-1): Is the answer fully supported by the context?
-2. RELEVANCE (0-1): Does the answer actually address the question?
-
-Respond in JSON only, no explanation:
-{{"groundedness": 0.0, "relevance": 0.0}}"""
-    }])
-
-    try:
-        content = res['message']['content'].strip()
-        content = re.sub(r'```json|```', '', content).strip()
-        scores = json.loads(content)
-        values = list(scores.values())
-        return {
-            "groundedness": float(values[0]),
-            "relevance": float(values[1]),
-        }
-    except Exception as e:
-        print(f"Relevancy parse failed: {e} — raw: {res['message']['content'][:100]}")
-        return {"groundedness": 0.0, "relevance": 0.0}
-
-
-def contextualize_query(query, history):
-    """Rewrite query using conversation history for better retrieval."""
-    if not history:
-        return query
-
-    ollama_client = ollama.Client(host=OLLAMA_BASE_URL)
-    res = ollama_client.chat(model='qwen2.5:7b', messages=[{
-        'role': 'user',
-        'content': f"""Given this conversation history:
-{json.dumps(history[-4:], indent=2)}
-
-And this new question: {query}
-
-Rewrite the question as a standalone query that includes all necessary context.
-Output only the rewritten query, nothing else."""
-    }])
-    return res['message']['content'].strip()
 
 
 def get_figure_image_on_demand(pdf_path, page_no, bbox_l, bbox_t, bbox_r, bbox_b):
@@ -322,6 +188,89 @@ def get_figure_image_on_demand(pdf_path, page_no, bbox_l, bbox_t, bbox_r, bbox_b
     ))
 
     return cropped
+
+
+def keyword_retrieve(query, paper_title=None, paper_titles=None, limit=5):
+    """Keyword-based retrieval using text matching."""
+    # Extract meaningful keywords — skip common words
+    stopwords = {'the', 'a', 'an', 'is', 'are', 'was', 'were', 'what', 'how', 'which',
+                 'does', 'do', 'did', 'can', 'could', 'would', 'should', 'and', 
+                 'or', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'from', 
+                 'each', 'other', 'seperately', 'use',
+                 'describe', 'explain', 'compare', 'contrast', 'similar', 'different'}
+    keywords = list(dict.fromkeys(
+                w for w in re.findall(r'\b[A-Za-z][A-Za-z0-9\-]+\b', query)
+                if w.lower() not in stopwords and len(w) > 2
+                ))  # preserve order and remove duplicates
+    if not keywords:
+        return []
+
+    # Get all text chunks for the relevant papers
+    filter_conditions = [FieldCondition(key="type", match=MatchValue(value="text"))]
+    if paper_title:
+        filter_conditions.append(FieldCondition(key="paper_title", match=MatchValue(value=paper_title)))
+
+    results = client.scroll(
+        collection_name=COLLECTION,
+        scroll_filter=Filter(must=filter_conditions),
+        limit=500,
+        with_payload=True,
+    )
+
+    # Score by keyword hits
+    scored = []
+    for r in results[0]:
+        # Check paper_titles filter in Python
+        if paper_titles and r.payload.get("paper_title") not in paper_titles:
+            continue
+        
+        text = json.loads(r.payload.get("_node_content", "{}")).get("text", "").lower()
+        section = r.payload.get("section", "").lower()
+        
+        score = 0
+        for kw in keywords:
+            kw_lower = kw.lower()
+            # Higher weight for exact model/method names (capitalized)
+            if kw[0].isupper():
+                score += text.count(kw_lower) * 2
+                score += section.count(kw_lower) * 3  # section name match is strong signal
+            else:
+                score += text.count(kw_lower)
+        
+        if score > 0:
+            scored.append((score, r.payload))
+    
+    # Sort by score and return top results
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [payload for _, payload in scored[:limit]]
+
+
+def hybrid_retrieve(query, top_k=5, paper_title=None, paper_titles=None, score_threshold=0.5):
+    """Combine semantic and keyword retrieval."""
+    # Semantic retrieval
+    semantic_nodes, nodes = retrieve(query, top_k=top_k, paper_title=paper_title, 
+                              paper_titles=paper_titles, score_threshold=score_threshold)
+    
+    # Keyword retrieval
+    keyword_payloads = keyword_retrieve(query, paper_title=paper_title, 
+                                        paper_titles=paper_titles, limit=3)
+    
+    # Convert keyword results to node-like dicts for enrichment
+    keyword_nodes = []
+    for payload in keyword_payloads:
+        # Check not already in semantic results
+        semantic_texts = {n.text for n in semantic_nodes}
+        text = json.loads(payload.get("_node_content", "{}")).get("text", "")
+        if text and text not in semantic_texts:
+            keyword_nodes.append({
+                "text": text,
+                "metadata": {k: v for k, v in payload.items() 
+                            if k not in ("_node_content", "_node_type")},
+                "score": 0.0,  # keyword match has no similarity score
+                "linked": [],
+                "source": "keyword"
+            })
+    return semantic_nodes, keyword_nodes, nodes
 
 
 def handle_direct_query(query, paper_title=None):
@@ -404,166 +353,3 @@ def handle_direct_query(query, paper_title=None):
     
     return None, None
 
-
-def chat(query, history=[], paper_title=None, paper_titles=None, top_k=5):
-    contextualized = contextualize_query(query, history)
-    print(f"\n🔍 Searching for: {contextualized}")
-
-    if paper_title:
-        paper_title = resolve_paper_title(paper_title)
-        print(f"   Resolved paper title: {paper_title}")
-
-    if paper_titles:
-        paper_titles = [resolve_paper_title(t) for t in paper_titles]
-        print(f"   Resolved paper titles: {paper_titles}")
-
-    # ── Direct lookup for figure/table/equation queries ───────────────
-    direct_result, ref_type = handle_direct_query(contextualized, paper_title)
-    if direct_result:
-        payload = direct_result["payload"]
-        referring_texts = direct_result["referring_texts"]
-        pil_image = direct_result.get("pil_image")
-
-        print(f"   Direct {ref_type} lookup — bypassing vector search")
-        print(f"   Found in: {payload.get('paper_title')}")
-        print(f"   {len(referring_texts)} referring text chunks found")
-
-        # Build context from payload + referring chunks
-        context_parts = [
-            f"[{ref_type.upper()} | {payload.get('paper_title')} | "
-            f"Section: {payload.get('section')} | Page: {payload.get('page')}]\n"
-            f"{json.loads(payload.get('_node_content', '')).get('text', '')}"
-        ]
-        for chunk in referring_texts:
-            context_parts.append(
-                f"[REFERRING TEXT | Section: {chunk.get('section')} | Page: {chunk.get('page')}]\n"
-                f"{json.loads(chunk.get('_node_content', '')).get('text', '')}"
-            )
-        context = "\n\n---\n\n".join(context_parts)
-
-        # For figures: re-query VLM with specific question
-        if ref_type == "figure" and pil_image:
-            print("   Re-querying VLM with specific question...")
-            vlm_answer = query_figure_with_question(pil_image, query, payload.get("caption", ""))
-            context += f"\n\n---\n\n[VLM ANALYSIS FOR QUERY]\n{vlm_answer}"
-
-        answer = generate_answer(query, context, history)
-        scores = check_relevancy(query, context, answer)
-
-        if scores["groundedness"] < 0.5 or scores["relevance"] < 0.5:
-            answer = (
-                f"I couldn't find sufficient information in "
-                f"{ref_type} {direct_result['ref_id']} to answer confidently.\n\n"
-                f"Attempt:\n" + answer
-            )
-
-        history.append({"role": "user", "content": query})
-        history.append({"role": "assistant", "content": answer})
-
-        return {
-            "answer": answer,
-            "sources": [{
-                "type": ref_type,
-                "paper": payload.get("paper_title"),
-                "section": payload.get("section"),
-                "page": payload.get("page"),
-                "id": direct_result["ref_id"],
-                "scope": "direct",
-            }],
-            "scores": scores,
-            "history": history,
-        }
-
-    # ── Normal vector search ──────────────────────────────────────────
-    scope = detect_scope(contextualized, paper_title)
-    print(f"   Scope: {scope}")
-
-    if scope == "local":
-        nodes = retrieve(contextualized, top_k=top_k, paper_title=paper_title)
-        if not nodes or nodes[0].score < 0.4:
-            print("   Local weak — falling back to global")
-            scope = "global"
-            nodes = retrieve(contextualized, top_k=top_k)
-    else:
-        nodes = retrieve(contextualized, top_k=top_k, paper_titles=paper_titles)
-
-    nodes = deduplicate_nodes(nodes)
-    print(f"   Retrieved {len(nodes)} chunks ({scope})")
-
-    enriched = enrich_with_references(nodes)
-    context = build_context(enriched)
-    answer = generate_answer(query, context, history)
-    scores = check_relevancy(query, context, answer)
-
-    if scores["groundedness"] < 0.5 or scores["relevance"] < 0.5:
-        answer = (
-            "I don't have sufficient information to answer this confidently.\n\n"
-            "Original attempt:\n" + answer
-        )
-
-    history.append({"role": "user", "content": query})
-    history.append({"role": "assistant", "content": answer})
-
-    sources = [
-        {
-            "paper": n["metadata"].get("paper_title"),
-            "section": n["metadata"].get("section"),
-            "page": n["metadata"].get("page"),
-            "type": n["metadata"].get("type"),
-            "score": round(n["score"], 3),
-            "scope": scope,
-        }
-        for n in enriched
-    ]
-
-    return {
-        "answer": answer,
-        "sources": sources,
-        "scores": scores,
-        "scope": scope,
-        "history": history,
-    }
-
-
-def query_figure_with_question(pil_image, question, caption):
-    """Re-query VLM on figure with user's specific question."""
-    buffered = io.BytesIO()
-    pil_image.save(buffered, format="PNG")
-    img_base64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
-
-    ollama_client = ollama.Client(host=OLLAMA_BASE_URL)
-    res = ollama_client.chat(model='qwen2.5vl:7b', messages=[{
-        'role': 'user',
-        'content': f"""Figure caption: {caption if caption else 'not provided'}
-
-Specific question about this figure: {question}
-
-Answer only based on what you can directly observe in the image.
-Do not infer or add information not visible.""",
-        'images': [img_base64]
-    }])
-    return res['message']['content']
-
-
-if __name__ == "__main__":
-    print("📚 Research RAG — ready")
-    print("=" * 50)
-
-    history = []
-
-    # Simple test question
-    query = "What method does EEGformer use for classification, and what method does BrainBERT use? Describe each separately."
-    paper_titles = None
-    paper_titles = ["EEGformer", "BrainBert"]
-
-    result = chat(query, history=history, paper_titles=paper_titles)
-
-    print(f"\n💬 Question: {query}")
-    print(f"\n Paper filter: {paper_titles}")
-    print(f"\n🤖 Answer:\n{result['answer']}")
-    print(f"\n📎 Sources:")
-    for s in result["sources"]:
-        print(f"   - [{s['type']}] {s['paper']} | {s['section']} | page {s['page']} (score: {s['score']})")
-    print(f"\n📊 Quality scores: {result['scores']}")
-    a = 'animal'
-    history = result['history'][:-1]

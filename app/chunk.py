@@ -362,7 +362,7 @@ def process_research_paper(pdf_path):
         if section_text_pool:
             
             full_section_text = "\n".join(section_text_pool)
-            chunks = chunk_text_by_chars(full_section_text, limit=1200, overlap=200)
+            chunks = chunk_text_by_chars(full_section_text, limit=1200, overlap=100)
 
             has_formulas = any(item.label == DocItemLabel.FORMULA for item in section["items"])
 
@@ -465,3 +465,4 @@ def chunk_text_by_chars(text, limit=1200, overlap=200):
         start = end - overlap # Overlap for context preservation
         
     return [c for c in chunks if c]
+

@@ -11,3 +11,4 @@ python-dotenv
 pix2tex
 pytesseract
 pymupdf
+fastapi
