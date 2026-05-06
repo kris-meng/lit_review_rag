@@ -17,3 +17,12 @@ __pycache__/
 *.bin
 *.safetensors
 pix2tex/
+
+# Node.js
+node_modules/
+dist/
+build/
+.eslintcache
+
+# Misc
+.DS_Store

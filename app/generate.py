@@ -1,5 +1,6 @@
 import base64
 import json
+from locale import normalize
 from pathlib import Path
 import ollama
 from collections import defaultdict
@@ -181,6 +182,23 @@ def diversify_nodes(nodes, all_candidates, score_threshold=0.4, paper_titles=Non
     result.sort(key=lambda n: n.score, reverse=True)
     return result
 
+# def detect_focused_paper(query, paper_titles):
+#     """
+#     Detect which papers are explicitly mentioned in the query.
+#     Returns a list of matched, resolved paper titles.
+#     """
+#     if not paper_titles:
+#         return []
+#     matched = []
+
+#     for title in paper_titles:
+#         # Extract main identifier (before colon)
+#         for word in query.lower().split():
+#             if resolve_paper_title(word) == title:
+#                 matched.append(title)
+
+#     return matched
+
 def chat_retrieve(query, history=[], paper_title=None, paper_titles=None, top_k=5):
     contextualized = contextualize_query(query, history)
     print(f"\n🔍 Searching for: {contextualized}")
@@ -192,9 +210,14 @@ def chat_retrieve(query, history=[], paper_title=None, paper_titles=None, top_k=
     if paper_titles:
         paper_titles = [resolve_paper_title(t) for t in paper_titles]
         print(f"   Resolved paper titles: {paper_titles}")
-
+        # detected = detect_focused_paper(contextualized, paper_titles)
+        # if detected:
+        #     print(f"   Narrowing to mentioned paper: {detected}")
+        #     paper_title = detected
+        #     paper_titles = None
+    
     # ── Direct lookup for figure/table/equation queries ───────────────
-    direct_result, ref_type = handle_direct_query(contextualized, paper_title)
+    direct_result, ref_type = handle_direct_query(query, paper_title)
     if direct_result:
         payload = direct_result["payload"]
         referring_texts = direct_result["referring_texts"]
@@ -204,7 +227,6 @@ def chat_retrieve(query, history=[], paper_title=None, paper_titles=None, top_k=
         print(f"   Found in: {payload.get('paper_title')}")
         print(f"   {len(referring_texts)} referring text chunks found")
 
-        # Build context from payload + referring chunks
         context_parts = [
             f"[{ref_type.upper()} | {payload.get('paper_title')} | "
             f"Section: {payload.get('section')} | Page: {payload.get('page')}]\n"
@@ -217,7 +239,6 @@ def chat_retrieve(query, history=[], paper_title=None, paper_titles=None, top_k=
             )
         context = "\n\n---\n\n".join(context_parts)
 
-        # For figures: re-query VLM with specific question
         if ref_type == "figure" and pil_image:
             print("   Re-querying VLM with specific question...")
             vlm_answer = query_figure_with_question(pil_image, query, payload.get("caption", ""))
@@ -235,13 +256,16 @@ def chat_retrieve(query, history=[], paper_title=None, paper_titles=None, top_k=
                 "page": payload.get("page"),
                 "id": direct_result["ref_id"],
                 "scope": "direct",
+                "node_text": json.loads(payload.get("_node_content", "{}")).get("text", ""),
+                "filename": Path(payload.get("source_pdf", "")).name,
+                "source_pdf": payload.get("source_pdf"),
             }],
             "scores": scores,
             "history": history,
         }
 
     # ── Normal vector search ──────────────────────────────────────────
-    scope = detect_scope(contextualized, paper_title, paper_titles)
+    scope = detect_scope(query, paper_title, paper_titles)
     print(f"   Scope: {scope}")
 
     if scope == "local":
@@ -258,7 +282,7 @@ def chat_retrieve(query, history=[], paper_title=None, paper_titles=None, top_k=
     print(f"   Retrieved {len(semantic_nodes)} semantic + {len(keyword_nodes)} keyword chunks ({scope})")
 
     enriched = enrich_with_references(semantic_nodes)
-    # Add keyword nodes directly to context
+
     if keyword_nodes:
         keyword_context = "\n\n---\n\n".join([
             f"[KEYWORD MATCH | {n['metadata'].get('paper_title')} | "
@@ -269,6 +293,7 @@ def chat_retrieve(query, history=[], paper_title=None, paper_titles=None, top_k=
         context = build_context(enriched) + "\n\n---\n\n" + keyword_context
     else:
         context = build_context(enriched)
+
     answer = generate_answer(query, context, history)
     scores = check_relevancy(query, context, answer)
 
@@ -278,6 +303,9 @@ def chat_retrieve(query, history=[], paper_title=None, paper_titles=None, top_k=
             "section": n["metadata"].get("section"),
             "page": n["metadata"].get("page"),
             "type": n["metadata"].get("type"),
+            "node_text": n["text"],
+            "filename": Path(n["metadata"].get("source_pdf", "")).name,
+            "source_pdf": n["metadata"].get("source_pdf"),
             "score": round(n["score"], 3),
             "scope": scope,
         }

@@ -16,8 +16,9 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 # ── Your existing modules ──────────────────────────────────────────────────────
@@ -134,6 +135,12 @@ async def upload_pdf(file: UploadFile = File(...)):
         "node_count": node_count,
     }
 
+@app.get("/pdfs/view/{filename:path}")
+def serve_pdf(filename: str):
+    pdf_path = PDF_DIR / filename
+    if not pdf_path.exists():
+        raise HTTPException(404, "PDF not found")
+    return FileResponse(pdf_path, media_type="application/pdf", headers={"Access-Control-Allow-Origin": "*"})
 
 @app.delete("/pdfs/{filename:path}")
 def remove_pdf(filename: str):
@@ -154,10 +161,6 @@ def remove_pdf(filename: str):
 
 @app.post("/chat")
 def chat_endpoint(req: ChatRequest):
-    """
-    Main chat endpoint.
-    Returns answer + rich source list (with node text + optional figure b64).
-    """
     history = sessions.get(req.session_id, [])
 
     resolved_titles = (
@@ -174,13 +177,18 @@ def chat_endpoint(req: ChatRequest):
 
     sessions[req.session_id] = result["history"]
 
-    # Enrich sources with node text and optional figure image
     rich_sources = []
     for s in result["sources"]:
         entry = dict(s)
         entry["node_text"] = s.get("node_text", "")
+        entry["bbox"] = {
+            "l": s.get("bbox_l"),
+            "t": s.get("bbox_t"),
+            "r": s.get("bbox_r"),
+            "b": s.get("bbox_b"),
+        }
+        entry["source_pdf"] = s.get("source_pdf")
 
-        # If it's a figure and we have a pil_image, encode to b64
         pil_image = s.get("pil_image")
         if pil_image is not None:
             buf = io.BytesIO()
@@ -189,7 +197,6 @@ def chat_endpoint(req: ChatRequest):
         else:
             entry["figure_b64"] = None
 
-        # Remove non-serialisable keys
         entry.pop("pil_image", None)
         rich_sources.append(entry)
 

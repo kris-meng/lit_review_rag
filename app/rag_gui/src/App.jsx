@@ -1,20 +1,17 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import { Document, Page, pdfjs } from "react-pdf";
+import "react-pdf/dist/Page/AnnotationLayer.css";
+import "react-pdf/dist/Page/TextLayer.css";
 
 const API = "http://localhost:8000";
-
 const genSessionId = () => Math.random().toString(36).slice(2);
-
-// ─── tiny helpers ────────────────────────────────────────────────────────────
+pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
+// ─── helpers ─────────────────────────────────────────────────────────────────
 
 function fmt(ts) {
   return new Date(ts).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 }
 
-function initials(title) {
-  return title.split(" ").slice(0, 2).map(w => w[0]).join("").toUpperCase();
-}
-
-// Maps "[src:N]" tokens in answer text to clickable chips
 function parseAnswer(text, sources) {
   if (!sources?.length) return [{ type: "text", value: text }];
   const parts = [];
@@ -30,236 +27,133 @@ function parseAnswer(text, sources) {
   return parts;
 }
 
-// ─── Source detail modal ──────────────────────────────────────────────────────
+// ─── styles ───────────────────────────────────────────────────────────────────
 
-function SourceModal({ source, onClose }) {
-  if (!source) return null;
-  return (
-    <div
-      onClick={onClose}
-      style={{
-        position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)",
-        display: "flex", alignItems: "center", justifyContent: "center",
-        zIndex: 9999, padding: "2rem",
-      }}
-    >
-      <div
-        onClick={e => e.stopPropagation()}
-        style={{
-          background: "var(--color-background-primary)",
-          border: "0.5px solid var(--color-border-secondary)",
-          borderRadius: "var(--border-radius-lg)",
-          width: "100%", maxWidth: 640, maxHeight: "80vh",
-          display: "flex", flexDirection: "column", overflow: "hidden",
-        }}
-      >
-        {/* header */}
-        <div style={{
-          padding: "1rem 1.25rem",
-          borderBottom: "0.5px solid var(--color-border-tertiary)",
-          display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12,
-        }}>
-          <div>
-            <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 4 }}>
-              <TypeBadge type={source.type} />
-              {source.scope === "direct" && <span style={badge("info")}>direct lookup</span>}
-            </div>
-            <p style={{ margin: 0, fontSize: 13, fontWeight: 500, color: "var(--color-text-primary)" }}>
-              {source.paper}
-            </p>
-            <p style={{ margin: "2px 0 0", fontSize: 12, color: "var(--color-text-secondary)" }}>
-              {source.section} · page {source.page ?? "—"}
-            </p>
-          </div>
-          <button onClick={onClose} style={iconBtn()}>✕</button>
-        </div>
+const colors = {
+  bg: "#2d2535",
+  panel: "#3a2f45",
+  panelLight: "#4a3d58",
+  chat: "#5a4f68",
+  inputBg: "#ede8f5",
+  accent: "#c084fc",
+  accentDim: "rgba(192,132,252,0.15)",
+  accentBorder: "rgba(192,132,252,0.4)",
+  text: "#f0eaf8",
+  textMuted: "rgba(240,234,248,0.6)",
+  textDim: "rgba(240,234,248,0.35)",
+  userBubble: "#6b5f7a",
+  border: "rgba(255,255,255,0.08)",
+  highlight: "rgba(192,132,252,0.25)",
+};
 
-        {/* figure image */}
-        {source.figure_b64 && (
-          <div style={{ padding: "1rem 1.25rem 0", textAlign: "center" }}>
-            <img
-              src={`data:image/png;base64,${source.figure_b64}`}
-              alt="figure"
-              style={{ maxWidth: "100%", maxHeight: 280, objectFit: "contain", borderRadius: 6 }}
-            />
-          </div>
-        )}
+const radius = { sm: 8, md: 12, lg: 20, xl: 24 };
 
-        {/* node text */}
-        <div style={{ flex: 1, overflowY: "auto", padding: "1rem 1.25rem" }}>
-          <p style={{
-            margin: 0, fontSize: 13, lineHeight: 1.7,
-            color: "var(--color-text-primary)",
-            whiteSpace: "pre-wrap", fontFamily: "var(--font-mono)",
-          }}>
-            {source.node_text || "No text preview available."}
-          </p>
-        </div>
+// ─── PDF Thumbnail ────────────────────────────────────────────────────────────
 
-        {/* score */}
-        {source.score !== undefined && source.score !== "direct" && (
-          <div style={{
-            padding: "0.75rem 1.25rem",
-            borderTop: "0.5px solid var(--color-border-tertiary)",
-            display: "flex", gap: 12,
-          }}>
-            <Meter label="relevance score" value={source.score} />
-            {source.rerank_score !== undefined && (
-              <Meter label="rerank score" value={Math.min(1, (source.rerank_score + 10) / 20)} />
-            )}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function Meter({ label, value }) {
-  const pct = Math.round(value * 100);
-  return (
-    <div style={{ flex: 1 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-        <span style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>{label}</span>
-        <span style={{ fontSize: 11, fontWeight: 500 }}>{pct}%</span>
-      </div>
-      <div style={{ height: 4, background: "var(--color-background-secondary)", borderRadius: 2 }}>
-        <div style={{
-          height: "100%", width: `${pct}%`, borderRadius: 2,
-          background: pct > 70 ? "var(--color-text-success)" : pct > 40 ? "var(--color-text-warning)" : "var(--color-text-danger)",
-          transition: "width 0.4s ease",
-        }} />
-      </div>
-    </div>
-  );
-}
-
-// ─── small style helpers ─────────────────────────────────────────────────────
-
-function badge(variant = "gray") {
-  const map = {
-    info: { bg: "var(--color-background-info)", color: "var(--color-text-info)" },
-    success: { bg: "var(--color-background-success)", color: "var(--color-text-success)" },
-    warning: { bg: "var(--color-background-warning)", color: "var(--color-text-warning)" },
-    danger: { bg: "var(--color-background-danger)", color: "var(--color-text-danger)" },
-    gray: { bg: "var(--color-background-secondary)", color: "var(--color-text-secondary)" },
-  };
-  const { bg, color } = map[variant] || map.gray;
-  return {
-    display: "inline-block", fontSize: 11, padding: "2px 7px",
-    borderRadius: "var(--border-radius-md)", background: bg, color,
-    fontWeight: 500, whiteSpace: "nowrap",
-  };
-}
-
-function TypeBadge({ type }) {
-  const v = type === "figure" ? "info" : type === "table" ? "success" : type === "formula" ? "warning" : "gray";
-  return <span style={badge(v)}>{type}</span>;
-}
-
-function iconBtn(extra = {}) {
-  return {
-    background: "none", border: "none", cursor: "pointer",
-    color: "var(--color-text-secondary)", fontSize: 14, padding: "2px 6px",
-    borderRadius: "var(--border-radius-md)", lineHeight: 1,
-    ...extra,
-  };
-}
-
-// ─── PDF pill in sidebar ──────────────────────────────────────────────────────
-
-function PdfPill({ pdf, focused, onToggleFocus, onDelete }) {
+function PdfThumb({ pdf, focused, onToggle, onDelete }) {
   const [hover, setHover] = useState(false);
-  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [confirmDel, setConfirmDel] = useState(false);
+  console.log("pdf object:", pdf);
+  const pdfUrl = `${API}/pdfs/view/${pdf.filename.split("/").map(encodeURIComponent).join("/")}`;
+  console.log("pdfUrl:", pdfUrl);
 
   return (
     <div
       onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => { setHover(false); setConfirmDelete(false); }}
+      onMouseLeave={() => { setHover(false); setConfirmDel(false); }}
+      onClick={() => !confirmDel && onToggle()}
       style={{
-        display: "flex", alignItems: "center", gap: 10, padding: "10px 12px",
-        borderRadius: "var(--border-radius-md)",
-        border: focused
-          ? "0.5px solid var(--color-border-info)"
-          : "0.5px solid var(--color-border-tertiary)",
-        background: focused
-          ? "var(--color-background-info)"
-          : hover ? "var(--color-background-secondary)" : "var(--color-background-primary)",
-        cursor: "pointer", transition: "all 0.15s ease",
-        position: "relative",
+        display: "flex", flexDirection: "column", alignItems: "center",
+        gap: 8, cursor: "pointer", position: "relative", width: 100,
       }}
-      onClick={() => !confirmDelete && onToggleFocus()}
     >
-      {/* initials avatar */}
       <div style={{
-        width: 32, height: 32, borderRadius: 6, flexShrink: 0,
-        background: focused ? "var(--color-background-primary)" : "var(--color-background-secondary)",
-        display: "flex", alignItems: "center", justifyContent: "center",
-        fontSize: 11, fontWeight: 500, color: "var(--color-text-secondary)",
-        border: "0.5px solid var(--color-border-tertiary)",
+        width: 80, height: 104,
+        borderRadius: radius.md, overflow: "hidden",
+        border: focused ? `2px solid ${colors.accent}` : "2px solid transparent",
+        position: "relative",
       }}>
-        {initials(pdf.paper_title)}
-      </div>
+        <Document
+          file={pdfUrl}
+          loading={<div style={{ width: 80, height: 104, background: "rgba(255,255,255,0.05)" }} />}
+        >
+          <Page
+            pageNumber={1}
+            width={80}
+            height={104}
+            renderTextLayer={false}
+            renderAnnotationLayer={false}
+          />
+        </Document>
 
-      {/* text */}
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <p style={{
-          margin: 0, fontSize: 12, fontWeight: 500,
-          color: focused ? "var(--color-text-info)" : "var(--color-text-primary)",
-          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-        }}>
-          {pdf.paper_title}
-        </p>
-        <p style={{
-          margin: 0, fontSize: 11, color: "var(--color-text-secondary)",
-          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-        }}>
-          {pdf.node_count} chunks · {fmt(pdf.ingested_at)}
-        </p>
-      </div>
+        {focused && (
+          <div style={{
+            position: "absolute", top: 6, right: 6,
+            width: 8, height: 8, borderRadius: "50%",
+            background: colors.accent,
+          }} />
+        )}
 
-      {/* delete / confirm */}
-      {hover && (
-        confirmDelete ? (
-          <div style={{ display: "flex", gap: 4, flexShrink: 0 }} onClick={e => e.stopPropagation()}>
-            <button
-              onClick={() => onDelete()}
-              style={{ ...iconBtn(), color: "var(--color-text-danger)", fontSize: 11, padding: "3px 8px",
-                border: "0.5px solid var(--color-border-danger)", borderRadius: "var(--border-radius-md)" }}
-            >
-              confirm
-            </button>
-            <button onClick={() => setConfirmDelete(false)} style={iconBtn()}>✕</button>
-          </div>
-        ) : (
+        {hover && !confirmDel && (
           <button
-            onClick={e => { e.stopPropagation(); setConfirmDelete(true); }}
-            style={iconBtn({ flexShrink: 0 })}
-            title="Remove from library"
-          >
-            🗑
-          </button>
-        )
-      )}
+            onClick={e => { e.stopPropagation(); setConfirmDel(true); }}
+            style={{
+              position: "absolute", top: 4, left: 4,
+              background: "rgba(0,0,0,0.6)", border: "none",
+              borderRadius: 6, color: "#f87171", fontSize: 11,
+              padding: "2px 5px", cursor: "pointer",
+            }}
+          >🗑</button>
+        )}
 
-      {focused && (
-        <div style={{
-          position: "absolute", top: 6, right: 6, width: 6, height: 6,
-          borderRadius: "50%", background: "var(--color-text-info)",
-        }} />
-      )}
+        {confirmDel && (
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{
+              position: "absolute", inset: 0, background: "rgba(0,0,0,0.8)",
+              display: "flex", flexDirection: "column",
+              alignItems: "center", justifyContent: "center", gap: 6,
+              borderRadius: radius.md,
+            }}
+          >
+            <span style={{ fontSize: 11, color: "#f87171" }}>Remove?</span>
+            <div style={{ display: "flex", gap: 4 }}>
+              <button onClick={() => onDelete()} style={{
+                fontSize: 11, padding: "2px 8px", borderRadius: 4,
+                background: "#f87171", border: "none", color: "white", cursor: "pointer",
+              }}>Yes</button>
+              <button onClick={() => setConfirmDel(false)} style={{
+                fontSize: 11, padding: "2px 8px", borderRadius: 4,
+                background: "transparent", border: "1px solid rgba(255,255,255,0.3)",
+                color: "white", cursor: "pointer",
+              }}>No</button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <p style={{
+        margin: 0, fontSize: 11, color: focused ? colors.accent : colors.textMuted,
+        textAlign: "center", lineHeight: 1.3,
+        overflow: "hidden", display: "-webkit-box",
+        WebkitLineClamp: 2, WebkitBoxOrient: "vertical",
+        width: "100%",
+      }}>
+        {pdf.paper_title}
+      </p>
     </div>
   );
 }
 
 // ─── Drop zone ────────────────────────────────────────────────────────────────
 
-function DropZone({ onFilesDropped, uploading }) {
+function DropZone({ onFiles, uploading }) {
   const [over, setOver] = useState(false);
-  const inputRef = useRef();
+  const ref = useRef();
 
   const handle = files => {
     const pdfs = [...files].filter(f => f.name.endsWith(".pdf"));
-    if (pdfs.length) onFilesDropped(pdfs);
+    if (pdfs.length) onFiles(pdfs);
   };
 
   return (
@@ -267,70 +161,58 @@ function DropZone({ onFilesDropped, uploading }) {
       onDragOver={e => { e.preventDefault(); setOver(true); }}
       onDragLeave={() => setOver(false)}
       onDrop={e => { e.preventDefault(); setOver(false); handle(e.dataTransfer.files); }}
-      onClick={() => !uploading && inputRef.current.click()}
+      onClick={() => !uploading && ref.current.click()}
       style={{
-        border: `0.5px dashed ${over ? "var(--color-border-info)" : "var(--color-border-secondary)"}`,
-        borderRadius: "var(--border-radius-md)",
-        padding: "16px 12px",
-        textAlign: "center",
-        background: over ? "var(--color-background-info)" : "transparent",
+        border: `1.5px dashed ${over ? colors.accent : "rgba(255,255,255,0.2)"}`,
+        borderRadius: radius.md, padding: "10px 8px", textAlign: "center",
         cursor: uploading ? "wait" : "pointer",
-        transition: "all 0.15s ease",
+        background: over ? colors.accentDim : "transparent",
+        transition: "all 0.15s",
       }}
     >
-      <input
-        ref={inputRef} type="file" accept=".pdf" multiple hidden
-        onChange={e => handle(e.target.files)}
-      />
-      <p style={{ margin: 0, fontSize: 12, color: "var(--color-text-secondary)" }}>
-        {uploading ? "Ingesting…" : "Drop PDFs here or click to browse"}
+      <input ref={ref} type="file" accept=".pdf" multiple hidden onChange={e => handle(e.target.files)} />
+      <p style={{ margin: 0, fontSize: 11, color: colors.textMuted }}>
+        {uploading ? "Ingesting…" : "+ Drop PDFs"}
       </p>
     </div>
   );
 }
 
-// ─── Ingestion toast ──────────────────────────────────────────────────────────
+// ─── Source citation chip ─────────────────────────────────────────────────────
 
-function Toast({ items, onDismiss }) {
-  if (!items.length) return null;
+function CiteBubble({ source, onClick }) {
   return (
-    <div style={{
-      position: "fixed", bottom: 24, right: 24, display: "flex", flexDirection: "column",
-      gap: 8, zIndex: 999,
-    }}>
-      {items.map(item => (
-        <div key={item.id} style={{
-          display: "flex", alignItems: "center", gap: 10,
-          padding: "10px 14px",
-          background: "var(--color-background-primary)",
-          border: "0.5px solid var(--color-border-secondary)",
-          borderRadius: "var(--border-radius-md)",
-          minWidth: 260,
-        }}>
-          <span style={{ fontSize: 13, color: item.error ? "var(--color-text-danger)" : "var(--color-text-primary)", flex: 1 }}>
-            {item.message}
-          </span>
-          <button onClick={() => onDismiss(item.id)} style={iconBtn()}>✕</button>
-        </div>
-      ))}
-    </div>
+    <button
+      onClick={onClick}
+      style={{
+        display: "inline-flex", alignItems: "center", gap: 4,
+        padding: "2px 8px", margin: "0 2px",
+        borderRadius: 20,
+        background: colors.accentDim,
+        border: `1px solid ${colors.accentBorder}`,
+        color: colors.accent,
+        fontSize: 11, fontWeight: 500, cursor: "pointer",
+        fontFamily: "inherit",
+      }}
+    >
+      {source?.paper?.split(" ").slice(0, 2).join(" ")} · p.{source?.page}
+    </button>
   );
 }
 
 // ─── Chat bubble ─────────────────────────────────────────────────────────────
 
-function Bubble({ msg, onCiteClick }) {
+function Bubble({ msg, onSourceClick }) {
   const isUser = msg.role === "user";
 
   if (isUser) {
     return (
       <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 16 }}>
         <div style={{
-          maxWidth: "80%", padding: "10px 14px",
-          background: "var(--color-background-secondary)",
-          border: "0.5px solid var(--color-border-tertiary)",
-          borderRadius: "var(--border-radius-lg)",
-          fontSize: 14, lineHeight: 1.65, color: "var(--color-text-primary)",
+          maxWidth: "70%", padding: "12px 16px",
+          background: colors.userBubble,
+          borderRadius: `${radius.lg}px ${radius.lg}px 4px ${radius.lg}px`,
+          fontSize: 14, lineHeight: 1.6, color: colors.text,
         }}>
           {msg.content}
         </div>
@@ -343,114 +225,234 @@ function Bubble({ msg, onCiteClick }) {
   return (
     <div style={{ marginBottom: 20 }}>
       <div style={{
-        fontSize: 14, lineHeight: 1.75, color: "var(--color-text-primary)",
+        fontSize: 14, lineHeight: 1.75, color: colors.text,
         whiteSpace: "pre-wrap",
       }}>
         {parts.map((part, i) =>
           part.type === "text" ? (
             <span key={i}>{part.value}</span>
           ) : (
-            <button
-              key={i}
-              onClick={() => onCiteClick(part.source)}
-              title={`${part.source?.type} · ${part.source?.paper} · p.${part.source?.page}`}
-              style={{
-                display: "inline-flex", alignItems: "center", gap: 4,
-                padding: "1px 7px", margin: "0 2px",
-                borderRadius: "var(--border-radius-md)",
-                border: "0.5px solid var(--color-border-info)",
-                background: "var(--color-background-info)",
-                color: "var(--color-text-info)",
-                fontSize: 11, fontWeight: 500, cursor: "pointer",
-                lineHeight: 1.6,
-              }}
-            >
-              ↗ {part.source?.type ?? "src"} p.{part.source?.page}
-            </button>
+            <CiteBubble key={i} source={part.source} onClick={() => onSourceClick(part.source)} />
           )
         )}
       </div>
 
-      {/* source chips row */}
+      {/* source chips */}
       {msg.sources?.length > 0 && (
         <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 10 }}>
           {msg.sources.map((s, i) => (
             <button
               key={i}
-              onClick={() => onCiteClick(s)}
+              onClick={() => onSourceClick(s)}
               style={{
                 display: "inline-flex", alignItems: "center", gap: 5,
-                padding: "3px 9px",
-                borderRadius: "var(--border-radius-md)",
-                border: "0.5px solid var(--color-border-tertiary)",
-                background: "var(--color-background-secondary)",
-                color: "var(--color-text-secondary)",
-                fontSize: 11, cursor: "pointer",
+                padding: "4px 10px",
+                borderRadius: 20,
+                border: `1px solid rgba(255,255,255,0.15)`,
+                background: "rgba(255,255,255,0.06)",
+                color: colors.textMuted,
+                fontSize: 11, cursor: "pointer", fontFamily: "inherit",
               }}
             >
-              <TypeBadge type={s.type} />
-              <span>p.{s.page}</span>
-              {s.score && s.score !== "direct" && (
-                <span style={{ color: "var(--color-text-tertiary)" }}>{Math.round(s.score * 100)}%</span>
-              )}
+              <span style={{
+                padding: "1px 6px", borderRadius: 10, fontSize: 10, fontWeight: 600,
+                background: s.type === "figure" ? "rgba(96,165,250,0.2)" :
+                             s.type === "table" ? "rgba(52,211,153,0.2)" :
+                             s.type === "formula" ? "rgba(251,191,36,0.2)" : "rgba(255,255,255,0.1)",
+                color: s.type === "figure" ? "#60a5fa" :
+                       s.type === "table" ? "#34d399" :
+                       s.type === "formula" ? "#fbbf24" : colors.textMuted,
+              }}>
+                {s.type}
+              </span>
+              p.{s.page}
+              {s.score && s.score !== "direct" &&
+                <span style={{ color: colors.textDim }}>{Math.round(s.score * 100)}%</span>
+              }
             </button>
           ))}
-        </div>
-      )}
-
-      {/* quality scores */}
-      {msg.scores && (
-        <div style={{ display: "flex", gap: 12, marginTop: 10 }}>
-          <Meter label="groundedness" value={msg.scores.groundedness} />
-          <Meter label="relevance" value={msg.scores.relevance} />
         </div>
       )}
     </div>
   );
 }
 
-// ─── Main app ─────────────────────────────────────────────────────────────────
+// ─── PDF Source Panel ─────────────────────────────────────────────────────────
+
+function SourcePanel({ source, onClose }) {
+  if (!source) return null;
+
+  const filename = source.filename;
+  const pdfUrl = filename ? `${API}/pdfs/view/${encodeURIComponent(filename)}` : null;
+  const pageNum = source.page ?? 1;
+  const [pageWidth, setPageWidth] = useState(0);
+  const [pageHeight, setPageHeight] = useState(0);
+  const pageRef = useRef();
+
+  const onPageLoad = (page) => {
+    setPageWidth(page.width);
+    setPageHeight(page.height);
+  };
+
+  // docling bbox: l, b, r, t in PDF units (origin bottom-left)
+  // react-pdf renders with origin top-left, so we flip y
+  const bbox = source.bbox;
+  const hasBox = bbox && bbox.l != null && pageWidth > 0;
+
+  const containerWidth = 380;
+  const scale = containerWidth / pageWidth;
+
+  const highlightStyle = hasBox ? {
+    position: "absolute",
+    left: bbox.l * scale,
+    top: (pageHeight - bbox.t) * scale,
+    width: (bbox.r - bbox.l) * scale,
+    height: (bbox.t - bbox.b) * scale,
+    background: "rgba(192,132,252,0.3)",
+    border: "2px solid rgba(192,132,252,0.8)",
+    borderRadius: 2,
+    pointerEvents: "none",
+  } : null;
+
+  return (
+    <div style={{
+      width: 420, flexShrink: 0,
+      background: colors.panel,
+      borderLeft: `1px solid ${colors.border}`,
+      display: "flex", flexDirection: "column",
+      borderRadius: `0 ${radius.xl}px ${radius.xl}px 0`,
+      overflow: "hidden",
+    }}>
+      {/* header */}
+      <div style={{
+        padding: "12px 16px", flexShrink: 0,
+        borderBottom: `1px solid ${colors.border}`,
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+      }}>
+        <div>
+          <p style={{ margin: 0, fontSize: 12, fontWeight: 600, color: colors.text }}>
+            {source.paper}
+          </p>
+          <p style={{ margin: 0, fontSize: 11, color: colors.textMuted }}>
+            {source.section} · page {source.page} · {source.type}
+            {source.score && source.score !== "direct" && ` · ${Math.round(source.score * 100)}% match`}
+          </p>
+        </div>
+        <button onClick={onClose} style={{
+          background: "rgba(255,255,255,0.1)", border: "none",
+          borderRadius: "50%", width: 28, height: 28,
+          color: colors.text, cursor: "pointer", fontSize: 14,
+          display: "flex", alignItems: "center", justifyContent: "center",
+        }}>✕</button>
+      </div>
+
+      {/* figure image */}
+      {source.figure_b64 && (
+        <div style={{ padding: "12px 16px 0", flexShrink: 0 }}>
+          <img
+            src={`data:image/png;base64,${source.figure_b64}`}
+            alt="figure"
+            style={{ width: "100%", borderRadius: 8, border: `1px solid ${colors.border}` }}
+          />
+        </div>
+      )}
+
+      {/* PDF page with highlight */}
+      <div style={{ flex: 1, overflowY: "auto", padding: "12px 16px" }}>
+        {pdfUrl ? (
+          <div style={{ position: "relative", display: "inline-block", width: "100%" }}>
+            <Document file={pdfUrl}>
+              <Page
+                pageNumber={pageNum}
+                width={containerWidth}
+                onLoadSuccess={onPageLoad}
+                inputRef={pageRef}
+                renderTextLayer={false}
+                renderAnnotationLayer={false}
+              />
+            </Document>
+            {highlightStyle && <div style={highlightStyle} />}
+          </div>
+        ) : (
+          <div style={{ color: colors.textDim, fontSize: 12, textAlign: "center", marginTop: 40 }}>
+            PDF not available
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Toast ────────────────────────────────────────────────────────────────────
+
+function Toast({ items, onDismiss }) {
+  if (!items.length) return null;
+  return (
+    <div style={{ position: "fixed", bottom: 24, right: 24, display: "flex", flexDirection: "column", gap: 8, zIndex: 999 }}>
+      {items.map(item => (
+        <div key={item.id} style={{
+          display: "flex", alignItems: "center", gap: 10,
+          padding: "10px 14px", minWidth: 260,
+          background: colors.panelLight,
+          border: `1px solid ${colors.border}`,
+          borderRadius: radius.md,
+        }}>
+          <span style={{ fontSize: 13, color: item.error ? "#f87171" : colors.text, flex: 1 }}>{item.message}</span>
+          <button onClick={() => onDismiss(item.id)} style={{ background: "none", border: "none", color: colors.textMuted, cursor: "pointer", fontSize: 14 }}>✕</button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ─── Spinner ──────────────────────────────────────────────────────────────────
+
+function Spinner() {
+  return (
+    <div style={{
+      width: 14, height: 14,
+      border: "2px solid rgba(255,255,255,0.2)",
+      borderTopColor: colors.accent,
+      borderRadius: "50%",
+      animation: "spin 0.8s linear infinite",
+    }}>
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+    </div>
+  );
+}
+
+// ─── Main App ─────────────────────────────────────────────────────────────────
 
 export default function App() {
   const [pdfs, setPdfs] = useState([]);
-  const [focused, setFocused] = useState(new Set()); // set of paper_titles
+  const [focused, setFocused] = useState(new Set());
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [toasts, setToasts] = useState([]);
-  const [modalSource, setModalSource] = useState(null);
+  const [activeSource, setActiveSource] = useState(null);
   const [sessionId] = useState(genSessionId);
   const scrollRef = useRef();
 
-  // ── fetch PDF list ──────────────────────────────────────────────────────────
   const refreshPdfs = useCallback(async () => {
     try {
       const res = await fetch(`${API}/pdfs`);
-      const data = await res.json();
-      setPdfs(data);
-    } catch (e) {
-      pushToast("Could not reach the API server.", true);
-    }
+      setPdfs(await res.json());
+    } catch { pushToast("Could not reach the API server.", true); }
   }, []);
 
   useEffect(() => { refreshPdfs(); }, [refreshPdfs]);
-
-  // auto-scroll
   useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
+    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [messages]);
 
-  // ── toasts ──────────────────────────────────────────────────────────────────
   const pushToast = (message, error = false) => {
     const id = Math.random().toString(36).slice(2);
     setToasts(t => [...t, { id, message, error }]);
-    setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 6000);
+    setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 5000);
   };
 
-  // ── upload ──────────────────────────────────────────────────────────────────
   const handleUpload = async (files) => {
     setUploading(true);
     for (const file of files) {
@@ -460,32 +462,26 @@ export default function App() {
       try {
         const res = await fetch(`${API}/pdfs/upload`, { method: "POST", body: fd });
         const data = await res.json();
-        if (data.status === "already_ingested") {
-          pushToast(`"${file.name}" already in library.`);
-        } else {
-          pushToast(`Done: "${data.paper_title}" (${data.node_count} chunks)`);
-        }
+        pushToast(data.status === "already_ingested"
+          ? `"${file.name}" already in library.`
+          : `Done: "${data.paper_title}" (${data.node_count} chunks)`);
       } catch (e) {
-        pushToast(`Failed to ingest "${file.name}": ${e.message}`, true);
+        pushToast(`Failed: ${e.message}`, true);
       }
     }
     setUploading(false);
     refreshPdfs();
   };
 
-  // ── delete ──────────────────────────────────────────────────────────────────
   const handleDelete = async (pdf) => {
     try {
       await fetch(`${API}/pdfs/${encodeURIComponent(pdf.filename)}`, { method: "DELETE" });
       setFocused(f => { const n = new Set(f); n.delete(pdf.paper_title); return n; });
       pushToast(`Removed "${pdf.paper_title}"`);
       refreshPdfs();
-    } catch (e) {
-      pushToast(`Delete failed: ${e.message}`, true);
-    }
+    } catch (e) { pushToast(`Delete failed: ${e.message}`, true); }
   };
 
-  // ── toggle focus ────────────────────────────────────────────────────────────
   const toggleFocus = (title) => {
     setFocused(f => {
       const n = new Set(f);
@@ -494,290 +490,244 @@ export default function App() {
     });
   };
 
-  // ── send chat ───────────────────────────────────────────────────────────────
   const send = async () => {
     const q = input.trim();
     if (!q || loading) return;
     setInput("");
+    setActiveSource(null);
     setMessages(m => [...m, { role: "user", content: q }]);
     setLoading(true);
-
     try {
       const res = await fetch(`${API}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          session_id: sessionId,
-          query: q,
-          paper_titles: [...focused],
-        }),
+        body: JSON.stringify({ session_id: sessionId, query: q, paper_titles: [...focused] }),
       });
       const data = await res.json();
       setMessages(m => [...m, {
-        role: "assistant",
-        content: data.answer,
-        sources: data.sources,
-        scores: data.scores,
+        role: "assistant", content: data.answer,
+        sources: data.sources, scores: data.scores,
       }]);
     } catch (e) {
-      setMessages(m => [...m, {
-        role: "assistant",
-        content: `Error: ${e.message}`,
-        sources: [],
-      }]);
+      setMessages(m => [...m, { role: "assistant", content: `Error: ${e.message}`, sources: [] }]);
     }
     setLoading(false);
   };
 
-  const handleKey = e => {
-    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
-  };
+  const handleKey = e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } };
 
-  // ─── render ─────────────────────────────────────────────────────────────────
+  const hints = ["Summarize this paper", "Compare Papers", "Find Research Gap", "Show me Figure 2"];
+
   return (
     <div style={{
-      display: "flex", height: "100vh", width: "100%",
-      fontFamily: "var(--font-sans)",
-      background: "var(--color-background-tertiary)",
+      width: "100vw", height: "100vh",
+      background: colors.bg,
+      display: "flex", alignItems: "center", justifyContent: "center",
+      fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
       overflow: "hidden",
     }}>
-
-      {/* ── LEFT PANEL ─────────────────────────────────────────────────────── */}
-      <aside style={{
-        width: 280, flexShrink: 0,
-        display: "flex", flexDirection: "column",
-        borderRight: "0.5px solid var(--color-border-tertiary)",
-        background: "var(--color-background-primary)",
-        overflow: "hidden",
+      {/* outer card */}
+      <div style={{
+        width: "calc(100vw - 48px)", height: "calc(100vh - 48px)",
+        maxWidth: 1400,
+        background: colors.panel,
+        borderRadius: radius.xl,
+        display: "flex", overflow: "hidden",
+        boxShadow: "0 24px 80px rgba(0,0,0,0.5)",
+        minWidth: 0,
       }}>
+
+        {/* ── LEFT: documents panel ───────────────────────────────────── */}
         <div style={{
-          padding: "1rem 1rem 0.75rem",
-          borderBottom: "0.5px solid var(--color-border-tertiary)",
+          width: 300, flexShrink: 0,
+          display: "flex", flexDirection: "column",
+          borderRight: `1px solid ${colors.border}`,
+          padding: "1.25rem 1rem",
+          background: colors.panelLight,
+          borderRadius: `${radius.xl}px 0 0 ${radius.xl}px`,
+          overflow: "hidden", 
         }}>
-          <p style={{ margin: "0 0 2px", fontSize: 13, fontWeight: 500, color: "var(--color-text-primary)" }}>
-            Library
-          </p>
-          <p style={{ margin: 0, fontSize: 11, color: "var(--color-text-secondary)" }}>
-            {pdfs.length} paper{pdfs.length !== 1 ? "s" : ""} ·{" "}
-            {focused.size > 0 ? `${focused.size} focused` : "all in scope"}
-          </p>
-        </div>
-
-        {/* drop zone */}
-        <div style={{ padding: "0.75rem 1rem", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
-          <DropZone onFilesDropped={handleUpload} uploading={uploading} />
-        </div>
-
-        {/* focus hint */}
-        {focused.size > 0 && (
-          <div style={{
-            margin: "0.5rem 1rem 0",
-            padding: "6px 10px",
-            borderRadius: "var(--border-radius-md)",
-            background: "var(--color-background-info)",
-            border: "0.5px solid var(--color-border-info)",
-            display: "flex", alignItems: "center", justifyContent: "space-between",
-          }}>
-            <span style={{ fontSize: 11, color: "var(--color-text-info)" }}>
-              Querying {focused.size} paper{focused.size > 1 ? "s" : ""}
-            </span>
-            <button
-              onClick={() => setFocused(new Set())}
-              style={{ ...iconBtn(), fontSize: 11, color: "var(--color-text-info)" }}
-            >
-              clear
-            </button>
+          {/* header */}
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+            <span style={{ fontSize: 15, fontWeight: 700, color: colors.text }}>Documents</span>
+            <div style={{ display: "flex", gap: 8 }}>
+              {focused.size > 0 && (
+                <button
+                  onClick={() => setFocused(new Set())}
+                  title="Clear focus"
+                  style={{ background: "none", border: "none", cursor: "pointer", color: colors.accent, fontSize: 16 }}
+                >⊘</button>
+              )}
+            </div>
           </div>
+
+          {/* focused indicator */}
+          {focused.size > 0 && (
+            <div style={{
+              marginBottom: 12, padding: "5px 10px",
+              background: colors.accentDim, borderRadius: radius.sm,
+              fontSize: 11, color: colors.accent,
+            }}>
+              {focused.size} paper{focused.size > 1 ? "s" : ""} focused
+            </div>
+          )}
+
+          {/* thumbnails grid */}
+          <div style={{
+            flex: 1, overflowY: "auto",
+            display: "flex", flexWrap: "wrap",
+            gap: 12, alignContent: "flex-start",
+            paddingBottom: 8,
+          }}>
+            {pdfs.length === 0 && (
+              <p style={{ fontSize: 12, color: colors.textDim, width: "100%", textAlign: "center", marginTop: 24 }}>
+                No papers yet
+              </p>
+            )}
+            {pdfs.map(pdf => (
+              <PdfThumb
+                key={pdf.filename}
+                pdf={pdf}
+                focused={focused.has(pdf.paper_title)}
+                onToggle={() => toggleFocus(pdf.paper_title)}
+                onDelete={() => handleDelete(pdf)}
+              />
+            ))}
+          </div>
+
+          {/* drop zone */}
+          <div style={{ marginTop: 12 }}>
+            <DropZone onFiles={handleUpload} uploading={uploading} />
+          </div>
+        </div>
+
+        {/* ── MIDDLE: chat ────────────────────────────────────────────── */}
+        <div style={{
+          flex: 1, display: "flex", flexDirection: "column",
+          background: colors.chat, minWidth: 0,
+          textAlign: "left", 
+        }}>
+{/* focused paper chips + reset */}
+<div style={{
+  padding: "8px 1.25rem",
+  borderBottom: `1px solid ${colors.border}`,
+  display: "flex", alignItems: "center", gap: 6,
+  flexShrink: 0,
+}}>
+  <div style={{ display: "flex", flexWrap: "wrap", gap: 6, flex: 1 }}>
+    {focused.size === 0 && (
+      <span style={{ fontSize: 11, color: colors.textDim }}>Searching all papers</span>
+    )}
+    {[...focused].map(t => (
+      <div key={t} style={{
+        display: "inline-flex", alignItems: "center", gap: 5,
+        padding: "3px 10px", borderRadius: 20,
+        background: colors.accentDim,
+        border: `1px solid ${colors.accentBorder}`,
+        fontSize: 11, color: colors.accent,
+      }}>
+        {t.length > 35 ? t.slice(0, 35) + "…" : t}
+        <button onClick={() => toggleFocus(t)} style={{
+          background: "none", border: "none", cursor: "pointer",
+          color: colors.accent, fontSize: 12, padding: 0, lineHeight: 1,
+        }}>✕</button>
+      </div>
+    ))}
+  </div>
+  {messages.length > 0 && (
+    <button
+      onClick={async () => {
+        await fetch(`${API}/sessions/${sessionId}`, { method: "DELETE" });
+        setMessages([]);
+      }}
+      style={{
+        background: "rgba(255,255,255,0.08)", border: "none",
+        borderRadius: 20, padding: "4px 12px", flexShrink: 0,
+        color: colors.textMuted, fontSize: 11, cursor: "pointer",
+      }}
+    >Reset</button>
+  )}
+</div>
+          {/* messages */}
+<div ref={scrollRef} style={{ flex: 1, overflowY: "auto", padding: "1.5rem 1.25rem", position: "relative" }}>
+
+  {messages.length === 0 && (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 20, paddingTop: 8 }}>
+      <p style={{ fontSize: 20, fontWeight: 700, color: colors.text, margin: 0 }}>
+        Ready to dive deep into research?
+      </p>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 10, justifyContent: "flex-start" }}>
+        {hints.map(h => (
+          <button key={h} onClick={() => setInput(h)} style={{
+            padding: "8px 18px", borderRadius: 20, fontSize: 13,
+            background: "rgba(255,255,255,0.1)",
+            border: "1px solid rgba(255,255,255,0.15)",
+            color: colors.text, cursor: "pointer", fontFamily: "inherit",
+          }}>{h}</button>
+        ))}
+      </div>
+    </div>
+  )}
+
+  {messages.map((msg, i) => (
+    <Bubble key={i} msg={msg} onSourceClick={setActiveSource} />
+  ))}
+
+  {loading && (
+    <div style={{ display: "flex", gap: 8, alignItems: "center", color: colors.textMuted, fontSize: 13, marginBottom: 16 }}>
+      <Spinner /> Searching and generating…
+    </div>
+  )}
+</div>
+
+          {/* input */}
+          <div style={{ padding: "1rem 1.25rem" }}>
+            <div style={{
+              display: "flex", alignItems: "center", gap: 10,
+              background: colors.inputBg,
+              borderRadius: 30, padding: "8px 8px 8px 18px",
+            }}>
+              <textarea
+                value={input}
+                onChange={e => setInput(e.target.value)}
+                onKeyDown={handleKey}
+                placeholder="Ask away!"
+                rows={1}
+                style={{
+                  flex: 1, resize: "none", border: "none", outline: "none",
+                  background: "transparent", fontSize: 14, color: "#1a1a2e",
+                  fontFamily: "inherit", lineHeight: 1.5,
+                }}
+              />
+              <button
+                onClick={send}
+                disabled={loading || !input.trim()}
+                style={{
+                  width: 36, height: 36, borderRadius: "50%", border: "none",
+                  background: loading || !input.trim() ? "rgba(0,0,0,0.15)" : colors.accent,
+                  color: "white", cursor: loading || !input.trim() ? "not-allowed" : "pointer",
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  fontSize: 16, flexShrink: 0,
+                }}
+              >↑</button>
+            </div>
+          </div>
+        </div>
+
+        
+
+        {/* ── RIGHT: source panel ──────────────────────────────────────── */}
+        {activeSource ? (
+          <SourcePanel source={activeSource} onClose={() => setActiveSource(null)} />
+        ) : (
+          <div style={{
+            width: 0, transition: "width 0.2s ease", overflow: "hidden",
+          }} />
         )}
 
-        {/* PDF list */}
-        <div style={{ flex: 1, overflowY: "auto", padding: "0.5rem 1rem 1rem", display: "flex", flexDirection: "column", gap: 6 }}>
-          {pdfs.length === 0 && (
-            <p style={{ fontSize: 12, color: "var(--color-text-tertiary)", textAlign: "center", marginTop: 24 }}>
-              No papers yet. Drop a PDF above.
-            </p>
-          )}
-          {pdfs.map(pdf => (
-            <PdfPill
-              key={pdf.filename}
-              pdf={pdf}
-              focused={focused.has(pdf.paper_title)}
-              onToggleFocus={() => toggleFocus(pdf.paper_title)}
-              onDelete={() => handleDelete(pdf)}
-            />
-          ))}
-        </div>
-      </aside>
+      </div>
 
-      {/* ── RIGHT PANEL: CHAT ────────────────────────────────────────────────── */}
-      <main style={{
-        flex: 1, display: "flex", flexDirection: "column",
-        minWidth: 0, background: "var(--color-background-primary)",
-      }}>
-        {/* header */}
-        <div style={{
-          padding: "0.875rem 1.5rem",
-          borderBottom: "0.5px solid var(--color-border-tertiary)",
-          display: "flex", alignItems: "center", justifyContent: "space-between",
-          flexShrink: 0,
-        }}>
-          <div>
-            <p style={{ margin: 0, fontSize: 13, fontWeight: 500, color: "var(--color-text-primary)" }}>
-              Research assistant
-            </p>
-            <p style={{ margin: 0, fontSize: 11, color: "var(--color-text-secondary)" }}>
-              {focused.size > 0
-                ? `Focused: ${[...focused].join(", ").slice(0, 80)}${[...focused].join(", ").length > 80 ? "…" : ""}`
-                : "All papers in scope — click papers on the left to narrow focus"}
-            </p>
-          </div>
-          <button
-            onClick={async () => {
-              await fetch(`${API}/sessions/${sessionId}`, { method: "DELETE" });
-              setMessages([]);
-            }}
-            style={{
-              padding: "5px 12px", fontSize: 12,
-              border: "0.5px solid var(--color-border-secondary)",
-              borderRadius: "var(--border-radius-md)",
-              background: "none", cursor: "pointer",
-              color: "var(--color-text-secondary)",
-            }}
-          >
-            Reset conversation
-          </button>
-        </div>
-
-        {/* messages */}
-        <div
-          ref={scrollRef}
-          style={{ flex: 1, overflowY: "auto", padding: "1.5rem" }}
-        >
-          {messages.length === 0 && (
-            <div style={{ textAlign: "center", marginTop: 64 }}>
-              <p style={{ fontSize: 22, fontWeight: 500, color: "var(--color-text-primary)", margin: "0 0 8px" }}>
-                Ask about your papers
-              </p>
-              <p style={{ fontSize: 14, color: "var(--color-text-secondary)", margin: 0 }}>
-                Focus specific papers on the left, or search across your whole library.
-              </p>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 8, justifyContent: "center", marginTop: 24 }}>
-                {[
-                  "What methods were used?",
-                  "Summarise the key findings",
-                  "Compare across papers",
-                  "Show me Figure 2",
-                ].map(hint => (
-                  <button
-                    key={hint}
-                    onClick={() => { setInput(hint); }}
-                    style={{
-                      padding: "7px 14px", fontSize: 13,
-                      border: "0.5px solid var(--color-border-secondary)",
-                      borderRadius: "var(--border-radius-md)",
-                      background: "var(--color-background-secondary)",
-                      color: "var(--color-text-secondary)",
-                      cursor: "pointer",
-                    }}
-                  >
-                    {hint}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {messages.map((msg, i) => (
-            <Bubble key={i} msg={msg} onCiteClick={setModalSource} />
-          ))}
-
-          {loading && (
-            <div style={{ display: "flex", gap: 5, alignItems: "center", color: "var(--color-text-tertiary)", fontSize: 13, marginBottom: 16 }}>
-              <Spinner />
-              Searching and generating…
-            </div>
-          )}
-        </div>
-
-        {/* input bar */}
-        <div style={{
-          padding: "1rem 1.5rem",
-          borderTop: "0.5px solid var(--color-border-tertiary)",
-          flexShrink: 0,
-        }}>
-          {/* focused paper chips */}
-          {focused.size > 0 && (
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
-              {[...focused].map(t => (
-                <div key={t} style={{
-                  display: "inline-flex", alignItems: "center", gap: 6,
-                  padding: "3px 10px",
-                  borderRadius: "var(--border-radius-md)",
-                  border: "0.5px solid var(--color-border-info)",
-                  background: "var(--color-background-info)",
-                  fontSize: 11, color: "var(--color-text-info)",
-                }}>
-                  {t.length > 40 ? t.slice(0, 40) + "…" : t}
-                  <button onClick={() => toggleFocus(t)} style={{ ...iconBtn(), fontSize: 10, color: "var(--color-text-info)", padding: "0 2px" }}>✕</button>
-                </div>
-              ))}
-            </div>
-          )}
-
-          <div style={{ display: "flex", gap: 10, alignItems: "flex-end" }}>
-            <textarea
-              value={input}
-              onChange={e => setInput(e.target.value)}
-              onKeyDown={handleKey}
-              placeholder="Ask a question about your papers… (Enter to send, Shift+Enter for new line)"
-              rows={2}
-              style={{
-                flex: 1, resize: "none",
-                padding: "10px 12px", fontSize: 14,
-                border: "0.5px solid var(--color-border-secondary)",
-                borderRadius: "var(--border-radius-md)",
-                background: "var(--color-background-secondary)",
-                color: "var(--color-text-primary)",
-                fontFamily: "var(--font-sans)",
-                lineHeight: 1.5,
-                outline: "none",
-              }}
-            />
-            <button
-              onClick={send}
-              disabled={loading || !input.trim()}
-              style={{
-                padding: "10px 20px", fontSize: 13, fontWeight: 500,
-                borderRadius: "var(--border-radius-md)",
-                border: "0.5px solid var(--color-border-secondary)",
-                background: loading || !input.trim() ? "var(--color-background-secondary)" : "var(--color-background-primary)",
-                color: loading || !input.trim() ? "var(--color-text-tertiary)" : "var(--color-text-primary)",
-                cursor: loading || !input.trim() ? "not-allowed" : "pointer",
-                whiteSpace: "nowrap", height: 56,
-              }}
-            >
-              Send ↵
-            </button>
-          </div>
-        </div>
-      </main>
-
-      {/* ── modals & toasts ─────────────────────────────────────────────────── */}
-      {modalSource && <SourceModal source={modalSource} onClose={() => setModalSource(null)} />}
       <Toast items={toasts} onDismiss={id => setToasts(t => t.filter(x => x.id !== id))} />
-    </div>
-  );
-}
-
-function Spinner() {
-  return (
-    <div style={{
-      width: 14, height: 14, border: "2px solid var(--color-border-secondary)",
-      borderTopColor: "var(--color-text-secondary)",
-      borderRadius: "50%",
-      animation: "spin 0.8s linear infinite",
-    }}>
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </div>
   );
 }
