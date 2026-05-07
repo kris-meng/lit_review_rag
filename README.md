@@ -31,6 +31,8 @@ A research-grade RAG system for academic literature review. Drop in PDFs, chat w
 ---
 
 ## Project structure
+
+```
 ├── app/
 │   ├── app.py           # FastAPI server
 │   ├── chunk.py         # PDF parsing and node construction
@@ -45,6 +47,7 @@ A research-grade RAG system for academic literature review. Drop in PDFs, chat w
 ├── qdrant_db/           # Vector database
 ├── requirements.txt
 └── docker-compose.yml
+```
 
 ---
 
