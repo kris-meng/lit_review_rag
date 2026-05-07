@@ -40,9 +40,9 @@ A research-grade RAG system for academic literature review. Drop in PDFs, chat w
 │   ├── retrieval.py     # Hybrid retrieval logic
 │   ├── generate.py      # Query handling and answer generation
 │   └── db.py            # Qdrant client and vector store setup
-├── rag_gui/             # Frontend
-│   └── src/
-│       └── App.jsx      # React UI
+│   └── rag_gui/             # Frontend
+│       └── src/
+│           └── App.jsx      # React UI
 ├── documents/           # PDFs mounted into the container
 ├── qdrant_db/           # Vector database
 ├── requirements.txt
