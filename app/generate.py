@@ -14,19 +14,55 @@ OLLAMA_BASE_URL = "http://host.docker.internal:11434"
 
 
 SYSTEM_PROMPT = """You are a research assistant helping with academic literature review.
-You are given retrieved excerpts from research papers.
+You are given retrieved excerpts from research papers with the user query.
+You should use the retrieved excerpts to answer the user's question as best as possible.
 
 Rules:
 - If multiple papers say different things, highlight the contradiction
 - If the retrieved context doesn't answer the question, say so explicitly
-- For formulas, refer to them by their equation number
 - Try to keep it concise and focused on the question asked (max 300 words)
 - Never make up information not present in the retrieved context"""
 
+DEFAULT_CONTEXT_PROMPT = """You are a search expert. Rewrite the user's question into a professional academic search query. 
+If there is conversation history, resolve all pronouns (it, they, this). 
+If there is no history, expand the query with relevant technical keywords to improve retrieval from scientific papers.
+Output only the rewritten query, nothing else."""
+
+COMPARISON_CONTEXT_PROMPT = """Rewrite the question into a search query designed to find contrasting data. 
+Ensure the query includes words like 'comparison', 'benchmarks', 'metrics', or 'performance difference'. 
+If history exists, name the specific models/papers being compared.
+Output only the rewritten query, nothing else."""
+
+GAP_CONTEXT_PROMPT = """Rewrite the question into a search query that targets limitations and unexplored areas. 
+Include keywords like 'limitations', 'future work', 'open problems', 'assumptions', or 'conclusions'. 
+Output only the rewritten query, nothing else."""
+
+HYPOTHESIS_CONTEXT_PROMPT = """Rewrite the question into a search query that looks for scientific evidence or correlations. 
+Include keywords like 'experimental results', 'observed patterns', 'causality', or 'statistical significance'.
+Output only the rewritten query, nothing else."""
+
+TREND_CONTEXT_PROMPT = """Rewrite the question into a search query focused on the evolution of a field. 
+Include keywords like 'state of the art', 'historical progression', 'emerging trends', or 'chronological shifts'.
+Output only the rewritten query, nothing else."""
+
+MODE_TRIGGERS = {
+    "comparison": ["compare", "contrast", "difference", "vs", "versus", "both"],
+    "gap":        ["gap", "limitation", "missing", "future work", "unexplored", "weakness"],
+    "hypothesis": ["hypothesis", "suggest", "propose", "could", "what if", "predict"],
+    "trend":      ["trend", "pattern", "over time", "evolution", "progress", "state of the art"],
+}
+
+CONTEXT_PROMPTS = {
+    "default":    DEFAULT_CONTEXT_PROMPT,
+    "comparison": COMPARISON_CONTEXT_PROMPT,
+    "gap":        GAP_CONTEXT_PROMPT,
+    "hypothesis": HYPOTHESIS_CONTEXT_PROMPT,
+    "trend":      TREND_CONTEXT_PROMPT,
+}
+
+
 GLOBAL_TRIGGERS = [
-    "other papers", "any papers", "compare", "across papers",
-    "similar to", "different from", "address", "limitation",
-    "weakness", "gap", "related work", "literature"
+    "other papers", "any papers", "across papers", "different papers", "various papers",
 ]
 
 LOCAL_TRIGGERS = [
@@ -48,6 +84,15 @@ def detect_scope(query, paper_title=None, paper_titles=None):
     if any(title.lower() in query_lower for title in focused):
         return "local"
     return "local" if (paper_title or paper_titles) else "global"
+
+
+def detect_mode(query):
+    query_lower = query.lower()
+    for mode, triggers in MODE_TRIGGERS.items():
+        if any(t in query_lower for t in triggers):
+            return mode
+    return "default"
+
 
 def build_context(enriched_nodes):
     """Pack retrieved chunks into a prompt context string."""
@@ -75,7 +120,6 @@ def build_context(enriched_nodes):
 def generate_answer(query, context, history=[]):
     """Call LLM with retrieved context."""
     ollama_client = ollama.Client(host=OLLAMA_BASE_URL)
-
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     messages += history
     messages.append({
@@ -93,20 +137,20 @@ def check_relevancy(query, context, answer):
     res = ollama_client.chat(model='qwen2.5:7b', messages=[{
         'role': 'user',
         'content': f"""Given this question:
-{query}
+        {query}
 
-And this context:
-{context[:2000]}
+        And this context:
+        {context[:2000]}
 
-And this answer:
-{answer}
+        And this answer:
+        {answer}
 
-Rate on two dimensions:
-1. GROUNDEDNESS (0-1): Is the answer fully supported by the context?
-2. RELEVANCE (0-1): Does the answer actually address the question?
+        Rate on two dimensions:
+        1. GROUNDEDNESS (0-1): Is the answer fully supported by the context?
+        2. RELEVANCE (0-1): Does the answer actually address the question?
 
-Respond in JSON format only, no explanation:
-{{"groundedness": 0.5, "relevance": 0.5}}"""
+        Respond in JSON format only, no explanation:
+        {{"groundedness": 0.5, "relevance": 0.5}}"""
     }])
 
     try:
@@ -125,21 +169,26 @@ Respond in JSON format only, no explanation:
 
 def contextualize_query(query, history):
     """Rewrite query using conversation history for better retrieval."""
-    if not history:
-        return query
-
+    # 1. Detect the mode based on the user's raw query
+    mode = detect_mode(query) 
+    system_instruction = CONTEXT_PROMPTS[mode]
+    print(f"   Contextualizing for mode: {mode}")
+    history_context = json.dumps(history[-4:], indent=2) if history else "No previous conversation history."
     ollama_client = ollama.Client(host=OLLAMA_BASE_URL)
-    res = ollama_client.chat(model='qwen2.5:7b', messages=[{
-        'role': 'user',
-        'content': f"""Given this conversation history:
-{json.dumps(history[-4:], indent=2)}
-
-And this new question: {query}
-
-Rewrite the question as a standalone query that includes all necessary context.
-Output only the rewritten query, nothing else."""
-    }])
-    return res['message']['content'].strip()
+    res = ollama_client.chat(model='qwen2.5:7b', messages=[
+        {
+            'role': 'system', 
+            'content': system_instruction
+        },
+        {
+            'role': 'user',
+            'content': f"CONVERSATION HISTORY:\n{history_context}\n\nUSER QUESTION: {query}"
+        }
+    ])
+    rewritten_query = res['message']['content'].strip()
+    print(f"🔍 Original: {query}")
+    print(f"🚀 Optimized Query: {rewritten_query}")
+    return rewritten_query
 
 
 def expand_query(query):
@@ -148,22 +197,28 @@ def expand_query(query):
     res = ollama_client.chat(model='qwen2.5:7b', messages=[{
         'role': 'user',
         'content': f"""Generate 3 different search queries to retrieve relevant academic paper chunks for this question:
-{query}
+        {query}
 
-Output only the queries, one per line, no numbering, no explanation."""
+        Output only the queries, one per line, no numbering, no explanation."""
     }])
     queries = [q.strip() for q in res['message']['content'].strip().split('\n') if q.strip()]
     print(f"   Expanded queries: {queries}")
     return [query] + queries[:2]  # original + 2 expansions
 
-def diversify_nodes(nodes, all_candidates, score_threshold=0.4, paper_titles=None, scope="global"):
-    if scope != "global":
+def diversify_nodes(nodes, all_candidates, keyword_nodes, score_threshold=0.4, paper_title=None, paper_titles=None, scope="local"):
+    if paper_title:
         return nodes
 
     covered = {n.metadata.get("paper_title") for n in nodes}
     
-    # if paper_titles specified, use those; otherwise use all papers in candidates
-    target_papers = set(paper_titles) if paper_titles else {n.metadata.get("paper_title") for n in all_candidates}
+    if scope == "global":
+        target_papers = {
+            n.metadata.get("paper_title")
+            for n in all_candidates
+        }
+    elif paper_titles:
+        target_papers = set(paper_titles)
+
     missing = target_papers - covered
 
     if not missing:
@@ -171,33 +226,21 @@ def diversify_nodes(nodes, all_candidates, score_threshold=0.4, paper_titles=Non
 
     result = list(nodes)
     seen_ids = {n.node_id for n in nodes}
+    keyword_ids = {
+        n.get("id")
+        for n in keyword_nodes
+    }
 
     for paper in missing:
         best = next((n for n in sorted(all_candidates, key=lambda n: n.score, reverse=True)
                      if n.metadata.get("paper_title") == paper), None)
-        if best and best.score >= score_threshold and best.node_id not in seen_ids:
+        if best and best.score >= score_threshold and best.node_id not in seen_ids and best.node_id not in keyword_ids:
             result.append(best)
             seen_ids.add(best.node_id)
 
     result.sort(key=lambda n: n.score, reverse=True)
     return result
 
-# def detect_focused_paper(query, paper_titles):
-#     """
-#     Detect which papers are explicitly mentioned in the query.
-#     Returns a list of matched, resolved paper titles.
-#     """
-#     if not paper_titles:
-#         return []
-#     matched = []
-
-#     for title in paper_titles:
-#         # Extract main identifier (before colon)
-#         for word in query.lower().split():
-#             if resolve_paper_title(word) == title:
-#                 matched.append(title)
-
-#     return matched
 
 def chat_retrieve(query, history=[], paper_title=None, paper_titles=None, top_k=5):
     contextualized = contextualize_query(query, history)
@@ -210,11 +253,6 @@ def chat_retrieve(query, history=[], paper_title=None, paper_titles=None, top_k=
     if paper_titles:
         paper_titles = [resolve_paper_title(t) for t in paper_titles]
         print(f"   Resolved paper titles: {paper_titles}")
-        # detected = detect_focused_paper(contextualized, paper_titles)
-        # if detected:
-        #     print(f"   Narrowing to mentioned paper: {detected}")
-        #     paper_title = detected
-        #     paper_titles = None
     
     # ── Direct lookup for figure/table/equation queries ───────────────
     direct_result, ref_type = handle_direct_query(query, paper_title)
@@ -259,6 +297,10 @@ def chat_retrieve(query, history=[], paper_title=None, paper_titles=None, top_k=
                 "node_text": json.loads(payload.get("_node_content", "{}")).get("text", ""),
                 "filename": Path(payload.get("source_pdf", "")).name,
                 "source_pdf": payload.get("source_pdf"),
+                "bbox_l": payload.get("bbox_l"),
+                "bbox_t": payload.get("bbox_t"),
+                "bbox_r": payload.get("bbox_r"),
+                "bbox_b": payload.get("bbox_b"),
             }],
             "scores": scores,
             "history": history,
@@ -270,15 +312,14 @@ def chat_retrieve(query, history=[], paper_title=None, paper_titles=None, top_k=
 
     if scope == "local":
         semantic_nodes, keyword_nodes, nodes = hybrid_retrieve(
-            contextualized, top_k=top_k, paper_title=paper_title
+            contextualized, top_k=top_k, paper_title=paper_title, paper_titles=paper_titles
         )
     else:
         semantic_nodes, keyword_nodes, nodes = hybrid_retrieve(
-            contextualized, top_k=top_k, paper_titles=paper_titles
+            contextualized, top_k=top_k
         )
-
     semantic_nodes = deduplicate_nodes(semantic_nodes)
-    semantic_nodes = diversify_nodes(semantic_nodes, nodes, paper_titles=paper_titles, scope=scope)
+    semantic_nodes = diversify_nodes(semantic_nodes, nodes, keyword_nodes=keyword_nodes, paper_title=paper_title, paper_titles=paper_titles, scope=scope)
     print(f"   Retrieved {len(semantic_nodes)} semantic + {len(keyword_nodes)} keyword chunks ({scope})")
 
     enriched = enrich_with_references(semantic_nodes)
@@ -306,11 +347,34 @@ def chat_retrieve(query, history=[], paper_title=None, paper_titles=None, top_k=
             "node_text": n["text"],
             "filename": Path(n["metadata"].get("source_pdf", "")).name,
             "source_pdf": n["metadata"].get("source_pdf"),
+            "bbox_l": n["metadata"].get("bbox_l"),
+            "bbox_t": n["metadata"].get("bbox_t"),
+            "bbox_r": n["metadata"].get("bbox_r"),
+            "bbox_b": n["metadata"].get("bbox_b"),
             "score": round(n["score"], 3),
             "scope": scope,
         }
         for n in enriched
     ]
+    sources.extend([
+        {
+        "paper": n["metadata"].get("paper_title"),
+        "section": n["metadata"].get("section"),
+        "page": n["metadata"].get("page"),
+        "type": n["metadata"].get("type"),
+        "node_text": n["text"],
+        "filename": Path(n["metadata"].get("source_pdf", "")).name,
+        "source_pdf": n["metadata"].get("source_pdf"),
+        "bbox_l": n["metadata"].get("bbox_l"),
+        "bbox_t": n["metadata"].get("bbox_t"),
+        "bbox_r": n["metadata"].get("bbox_r"),
+        "bbox_b": n["metadata"].get("bbox_b"),
+        "score": None,  # keyword retrieval doesn't use embedding score
+        "scope": scope,
+        "retrieval_type": "keyword"
+        } 
+    for n in keyword_nodes
+    ])
 
     return {
         "answer": answer,
@@ -379,7 +443,7 @@ if __name__ == "__main__":
 
     history = []
     paper_title = None
-    paper_titles = None
+    paper_titles = {"EEGFormer", "BrainBert"}
 
     while True:
         try:

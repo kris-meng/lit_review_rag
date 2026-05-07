@@ -26,8 +26,8 @@ index = VectorStoreIndex.from_vector_store(
 )
 
 
-JUNK_SECTIONS = {'references', 'citation', 'edited by', 'ethics statement', 
-                 'acknowledgements', 'acknowledgments', 'funding', 'author contributions',
+JUNK_SECTIONS = {'references', 'citation', 'edited by', 'ethics statement', 'reproducibility statement',
+                 'acknowledgements', 'acknowledgments', 'funding', 'author contributions', 'compliance with ethical standards',
                  'conflict of interest', 'publisher\'s note'}
 
 def resolve_paper_title(paper_title):
@@ -213,7 +213,7 @@ def keyword_retrieve(query, paper_title=None, paper_titles=None, limit=5):
     results = client.scroll(
         collection_name=COLLECTION,
         scroll_filter=Filter(must=filter_conditions),
-        limit=500,
+        limit=800,
         with_payload=True,
     )
 
@@ -250,6 +250,11 @@ def hybrid_retrieve(query, top_k=5, paper_title=None, paper_titles=None, score_t
     # Semantic retrieval
     semantic_nodes, nodes = retrieve(query, top_k=top_k, paper_title=paper_title, 
                               paper_titles=paper_titles, score_threshold=score_threshold)
+    semantic_nodes = deduplicate_nodes(semantic_nodes)
+    node_ids = {
+        getattr(n, "node_id", None) or getattr(n, "id_", None)
+        for n in semantic_nodes
+    }
     
     # Keyword retrieval
     keyword_payloads = keyword_retrieve(query, paper_title=paper_title, 
@@ -258,18 +263,21 @@ def hybrid_retrieve(query, top_k=5, paper_title=None, paper_titles=None, score_t
     # Convert keyword results to node-like dicts for enrichment
     keyword_nodes = []
     for payload in keyword_payloads:
+        node_id = payload.get("id")
         # Check not already in semantic results
-        semantic_texts = {n.text for n in semantic_nodes}
+        if node_id in node_ids:
+            continue
         text = json.loads(payload.get("_node_content", "{}")).get("text", "")
-        if text and text not in semantic_texts:
-            keyword_nodes.append({
-                "text": text,
-                "metadata": {k: v for k, v in payload.items() 
+        keyword_nodes.append({
+            "text": text,
+            "id": node_id,
+            "metadata": {k: v for k, v in payload.items() 
                             if k not in ("_node_content", "_node_type")},
-                "score": 0.0,  # keyword match has no similarity score
-                "linked": [],
-                "source": "keyword"
-            })
+            "score": 0.0,  # keyword match has no similarity score
+            "linked": [],
+            "source": "keyword"
+        })
+        node_ids.add(node_id)
     return semantic_nodes, keyword_nodes, nodes
 
 

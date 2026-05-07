@@ -1,14 +1,29 @@
+# Document parsing
 docling
 docling-core
+pix2tex
+pymupdf
+
+# LlamaIndex
 llama-index
+llama-index-core
 llama-index-vector-stores-qdrant
 llama-index-embeddings-ollama
-llama-index-readers-docling
+
+# Vector store
 qdrant-client
+
+# LLM / vision
 ollama
-pillow
-python-dotenv
-pix2tex
-pytesseract
-pymupdf
+
+# API
 fastapi
+uvicorn
+python-multipart
+aiofiles
+pydantic
+
+# Utilities
+pillow
+tqdm
+python-dotenv

@@ -299,15 +299,15 @@ function SourcePanel({ source, onClose }) {
   const bbox = source.bbox;
   const hasBox = bbox && bbox.l != null && pageWidth > 0;
 
-  const containerWidth = 380;
-  const scale = containerWidth / pageWidth;
+  //const containerWidth = 380;
+  //const scale = containerWidth / pageWidth;
 
   const highlightStyle = hasBox ? {
     position: "absolute",
-    left: bbox.l * scale,
-    top: (pageHeight - bbox.t) * scale,
-    width: (bbox.r - bbox.l) * scale,
-    height: (bbox.t - bbox.b) * scale,
+    left: bbox.l, // * scale,
+    top: (pageHeight - bbox.t), // * scale,
+    width: (bbox.r - bbox.l), // * scale,
+    height: (bbox.t - bbox.b), // * scale,
     background: "rgba(192,132,252,0.3)",
     border: "2px solid rgba(192,132,252,0.8)",
     borderRadius: 2,
@@ -358,13 +358,13 @@ function SourcePanel({ source, onClose }) {
       )}
 
       {/* PDF page with highlight */}
-      <div style={{ flex: 1, overflowY: "auto", padding: "12px 16px" }}>
+      <div style={{ flex: 1,  padding: "12px 16px" , overflow: "hidden", justifyContent: "center", alignItems: "center", display: "flex" }}>
         {pdfUrl ? (
-          <div style={{ position: "relative", display: "inline-block", width: "100%" }}>
+          <div style={{ position: "relative", display: "inline-block", transform: "scale(0.65)", transformOrigin: "center"}}>
             <Document file={pdfUrl}>
               <Page
                 pageNumber={pageNum}
-                width={containerWidth}
+                //width={containerWidth}
                 onLoadSuccess={onPageLoad}
                 inputRef={pageRef}
                 renderTextLayer={false}
@@ -516,7 +516,7 @@ export default function App() {
 
   const handleKey = e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } };
 
-  const hints = ["Summarize this paper", "Compare Papers", "Find Research Gap", "Show me Figure 2"];
+  const hints = ["Summarize this paper", "Compare Papers", "Find Research Gap", "Generate New Hypothesis"];
 
   return (
     <div style={{

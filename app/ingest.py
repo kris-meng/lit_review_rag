@@ -128,7 +128,8 @@ def process_and_ingest(pdf_path: Path):
 if __name__ == "__main__":
 
     # To delete a specific PDF, uncomment and run:
-    #delete_pdf("Xu et al. - 2021 - Progression of sleep disturbances in Parkinson’s d.pdf")
+    delete_pdf("Wang et al. - 2023 - BrainBERT Self-supervised representation learning.pdf")
+    delete_pdf("fnhum-14-00338.pdf")
 
     print("🚀 Starting Ingestion...")
     pdf_paths = sorted(Path(PDF_DIR).glob("*.pdf"))
