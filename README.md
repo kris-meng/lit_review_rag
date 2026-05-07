@@ -32,18 +32,18 @@ A research-grade RAG system for academic literature review. Drop in PDFs, chat w
 
 ## Project structure
 ├── app/
-│   ├── app.py          # FastAPI server
-│   ├── chunk.py        # PDF parsing and node construction
-│   ├── ingest.py       # Ingestion pipeline and registry
-│   ├── retrieval.py    # Hybrid retrieval logic
-│   ├── generate.py     # Query handling and answer generation
-│   └── db.py           # Qdrant client and vector store setup
-│   └── requirements.txt
-│   └── rag_gui/        # Frontend
-│       └── src/
-│           └── App.jsx     # React UI
-├── documents/          # PDFs mounted into the container
-├── qdrant_db/          # Vector database
+│   ├── app.py           # FastAPI server
+│   ├── chunk.py         # PDF parsing and node construction
+│   ├── ingest.py        # Ingestion pipeline and registry
+│   ├── retrieval.py     # Hybrid retrieval logic
+│   ├── generate.py      # Query handling and answer generation
+│   └── db.py            # Qdrant client and vector store setup
+├── rag_gui/             # Frontend
+│   └── src/
+│       └── App.jsx      # React UI
+├── documents/           # PDFs mounted into the container
+├── qdrant_db/           # Vector database
+├── requirements.txt
 └── docker-compose.yml
 
 ---
