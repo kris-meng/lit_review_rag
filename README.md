@@ -1,80 +1,84 @@
-# LitRAG 🔬
+# LitRAG — Literature Review Assistant
 
-A research-grade RAG (Retrieval-Augmented Generation) system for academic literature review. Drop in your PDFs and chat with your papers — ask questions, compare findings across studies, and retrieve specific figures, tables, and equations with source-linked answers.
-
-> **Status:** Work in progress. Currently runs via Docker.
+A research-grade RAG system for academic literature review. Drop in PDFs, chat with your papers, and retrieve figures, tables, and equations with fully source-traced answers.
 
 ---
 
-## Features
+## What it does
 
-- **Multi-paper retrieval** — semantic + keyword hybrid search across your entire library
-- **Focused querying** — pin specific papers to scope your questions
-- **Direct asset lookup** — ask about Figure 3 or Table 2 and get the exact item, not just nearby text
-- **Figure understanding** — vision model (Qwen2.5-VL) describes figures at ingestion time and re-queries them on demand
-- **Formula OCR** — extracts and summarises LaTeX equations using pix2tex
-- **Source hyperlinks** — every answer links back to the exact chunk, page, and section it came from (IPR)
-- **Expand-query fallback** — if the first retrieval scores poorly on groundedness/relevance, automatically retries with expanded queries before giving up
-- **Web UI** — React frontend with drag-and-drop PDF ingestion, paper focus toggling, and a source detail modal (IPR)
+- **Structured PDF ingestion** — extracts section-aware text chunks, figure descriptions (via Qwen2.5-VL), and LaTeX formulas (via pix2tex), treating each as a distinct retrieval target
+- **Hybrid retrieval** — combines dense semantic search (Nomic embeddings + Qdrant) with keyword retrieval and automatic query expansion
+- **Direct asset lookup** — detects queries about specific figures, tables, or equations and fetches them directly, bypassing vector search
+- **Answer grounding** — every response is scored for groundedness and relevance; low-scoring answers trigger automatic retry before falling back
+- **Adaptive search scope** — pin specific papers for focused queries, or search across the full library; scope is also inferred automatically from the query
+- **Source traceability** — every answer links back to the exact chunk, section, page, and paper, with a UI panel showing the retrieved passage or figure
 
 ---
 
 ## Stack
 
-| Component | Tool |
+| Layer | Tools |
 |---|---|
-| PDF parsing | Docling |
-| Embeddings | Nomic `nomic-embed-text-v2-moe` via Ollama |
-| Vector store | Qdrant (local) |
-| LLM | Qwen2.5:7b via Ollama |
-| Vision model | Qwen2.5-VL:7b via Ollama |
-| Formula OCR | pix2tex |
+| Document parsing | Docling, pix2tex, PyMuPDF |
+| Vision model | Qwen2.5-VL (via Ollama) |
+| Embeddings | Nomic `nomic-embed-text-v2-moe` (via Ollama) |
+| Vector store | Qdrant |
+| Retrieval & indexing | LlamaIndex |
+| LLM | Qwen2.5:7b (via Ollama) |
 | Backend | FastAPI |
 | Frontend | React + Vite |
 
 ---
 
-## Requirements
-
-- Docker
-- [Ollama](https://ollama.com) running on your host machine with the following models pulled:
-
-```bash
-ollama pull nomic-embed-text-v2-moe
-ollama pull qwen2.5:7b
-ollama pull qwen2.5vl:7b
-```
+## Project structure
+├── app/
+│   ├── app.py          # FastAPI server
+│   ├── chunk.py        # PDF parsing and node construction
+│   ├── ingest.py       # Ingestion pipeline and registry
+│   ├── retrieval.py    # Hybrid retrieval logic
+│   ├── generate.py     # Query handling and answer generation
+│   └── db.py           # Qdrant client and vector store setup
+│   └── requirements.txt
+│   └── rag_gui/        # Frontend
+│       └── src/
+│           └── App.jsx     # React UI
+├── documents/          # PDFs mounted into the container
+├── qdrant_db/          # Vector database
+└── docker-compose.yml
 
 ---
 
-## Getting Started
+## Getting started
 
-### 1. Clone the repo
+### Prerequisites
+
+- [Docker](https://www.docker.com/)
+- [Ollama](https://ollama.com/) running locally
+
+### 1. Pull required models
+
+```bash
+ollama pull qwen2.5:7b
+ollama pull qwen2.5vl:7b
+ollama pull nomic-embed-text-v2-moe
+```
+
+### 2. Clone the repo
 
 ```bash
 git clone https://github.com/kris-meng/lit_review_rag
 cd lit_review_rag
 ```
 
-### 2. Build and run the Docker container
+### 3. Start the backend
 
 ```bash
-docker build -t litrag .
-docker run -p 8000:8000 -v $(pwd)/documents:/app/documents -v $(pwd)/qdrant_db:/app/qdrant_db litrag
+docker compose up --build
 ```
 
-### 3. Start the API
-
-Inside the container:
-
-```bash
-cd /app/app
-uvicorn app:app --port 8000
-```
+The FastAPI server will be available at `http://localhost:8000`.
 
 ### 4. Start the frontend
-
-On your host machine:
 
 ```bash
 cd rag_gui
@@ -82,68 +86,20 @@ npm install
 npm run dev
 ```
 
-Then open `http://localhost:5173`.
+The UI will be available at `http://localhost:5173`.
 
 ---
 
 ## Usage
 
-### Ingesting papers
-
-Drop PDFs into the web UI or place them in the `documents/` folder and run:
-
-```bash
-cd /app/app
-python ingest.py
-```
-
-### Chatting
-
-- **Click a paper** in the left panel to focus your query on it
-- **Click multiple papers** to search across a specific subset
-- **Leave all unselected** to search your entire library
-- **Click any source chip** in an answer to view the exact retrieved chunk
-
-### Commands (CLI mode)
-
-```
-/paper <name>        filter to a specific paper
-/papers <n1>, <n2>   filter to multiple papers
-/clear               search all papers
-/reset               reset conversation history
-/quit                exit
-```
+1. Drop a PDF into the sidebar — it will be ingested and indexed automatically
+2. Click a paper thumbnail to focus queries on that paper, or leave all unselected to search across everything
+3. Ask questions in natural language — answers include clickable source citations linked to the exact page and section
+4. Click any source chip to open the retrieved passage or figure in the side panel
 
 ---
 
-## Project Structure
+## Future work
 
-```
-/app/app/
-├── app.py          # FastAPI server
-├── ingest.py       # PDF registry + ingestion pipeline
-├── embedding.py    # Docling parsing, chunking, figure/formula processing
-├── retrieval.py    # Vector + keyword retrieval, hybrid search
-├── generate.py     # Query contextualization, answer generation, relevancy scoring
-├── db.py           # Shared Qdrant client
-└── rag_gui/        # React frontend
-```
-
----
-
-## Known Limitations
-
-- Qdrant runs in local file mode — only one process can access it at a time (no `--reload` with uvicorn)
-- pix2tex requires `timm==0.5.4` which conflicts with newer `sentence-transformers` — reranking is disabled for now
-- Formula extraction is best-effort; image-only formulas in scanned PDFs may be skipped
-- `resolve_paper_title` scrolls only 100 points to find titles — may miss papers in very large libraries
-
----
-
-## Roadmap
-
-- [ ] PDF viewer with bbox highlighting for source chunks
-- [ ] Qdrant server mode for concurrent access and native full-text search
-- [ ] Cross-encoder reranking (blocked by timm conflict)
-- [ ] Supplementary figure/table support
-- [ ] Multi-modal answers (inline figure rendering in chat)
+- Cross-encoder reranking for improved retrieval precision
+- Qdrant server mode for concurrent multi-user access and native full-text search
